@@ -27,7 +27,15 @@ jobs:
           sudo apt-get install -y \
             libcurl4-openssl-dev \
             libssl-dev \
-            libxml2-dev
+            libxml2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libharfbuzz-dev \
+            libfribidi-dev \
+            libudunits2-dev \
+            libgdal-dev \
+            libgeos-dev \
+            libproj-dev
 
       - name: Create R library path
         run: mkdir -p ~/R-lib

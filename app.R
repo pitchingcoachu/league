@@ -20897,18 +20897,14 @@ save_newtforce_data <- function(df, app_id) {
 load_newtforce_data <- function(app_id) {
   con <- biomech_db_connect()
   if (is.null(con)) return(NULL)
-  
-  backend <- get_biomech_backend()
-  
+
   tryCatch({
-    # Use appropriate parameterized query syntax
-    if (backend$type == "sqlite") {
-      query <- "SELECT * FROM newtforce_data WHERE app_id = ? ORDER BY date DESC, last_name, first_name"
-      result <- DBI::dbGetQuery(con, query, params = list(app_id))
-    } else {
-      query <- "SELECT * FROM newtforce_data WHERE app_id = $1 ORDER BY date DESC, last_name, first_name"
-      result <- DBI::dbGetQuery(con, query, params = list(app_id))
-    }
+    app_id_quoted <- DBI::dbQuoteString(con, as.character(app_id))
+    query <- sprintf(
+      "SELECT * FROM newtforce_data WHERE app_id = %s ORDER BY date DESC, last_name, first_name",
+      app_id_quoted
+    )
+    result <- DBI::dbGetQuery(con, query)
     DBI::dbDisconnect(con)
     
     if (nrow(result) == 0) return(NULL)
@@ -20957,18 +20953,14 @@ load_newtforce_data <- function(app_id) {
 get_newtforce_pitchers <- function(app_id) {
   con <- biomech_db_connect()
   if (is.null(con)) return(character(0))
-  
-  backend <- get_biomech_backend()
-  
+
   tryCatch({
-    # Use appropriate parameterized query syntax
-    if (backend$type == "sqlite") {
-      query <- "SELECT DISTINCT first_name, last_name FROM newtforce_data WHERE app_id = ? ORDER BY last_name, first_name"
-      result <- DBI::dbGetQuery(con, query, params = list(app_id))
-    } else {
-      query <- "SELECT DISTINCT first_name, last_name FROM newtforce_data WHERE app_id = $1 ORDER BY last_name, first_name"
-      result <- DBI::dbGetQuery(con, query, params = list(app_id))
-    }
+    app_id_quoted <- DBI::dbQuoteString(con, as.character(app_id))
+    query <- sprintf(
+      "SELECT DISTINCT first_name, last_name FROM newtforce_data WHERE app_id = %s ORDER BY last_name, first_name",
+      app_id_quoted
+    )
+    result <- DBI::dbGetQuery(con, query)
     DBI::dbDisconnect(con)
     
     if (nrow(result) == 0) return(character(0))
@@ -21817,6 +21809,7 @@ ensure_manual_velocity_table <- function(con) {
 }
 
 load_manual_velocity_entries <- function(app_id = current_school()) {
+  target_app_id <- as.character(app_id %||% "")
   empty_tbl <- tibble::tibble(
     id = character(),
     app_id = character(),
@@ -21838,7 +21831,7 @@ load_manual_velocity_entries <- function(app_id = current_school()) {
     if (!is.null(con)) {
       on.exit(tryCatch(DBI::dbDisconnect(con), error = function(e) NULL), add = TRUE)
       try(ensure_manual_velocity_table(con), silent = TRUE)
-      quoted_app <- DBI::dbQuoteString(con, app_id)
+      quoted_app <- DBI::dbQuoteString(con, target_app_id)
       sql <- sprintf(
         "SELECT id, app_id, entry_date, pitcher, throw_type, plyo_drill, ball_weight_oz, velocity_mph, notes, created_at
          FROM manual_velocity_entries
@@ -21861,7 +21854,7 @@ load_manual_velocity_entries <- function(app_id = current_school()) {
   }
 
   if (!"id" %in% names(df)) df$id <- sprintf("legacy_%s", seq_len(nrow(df)))
-  if (!"app_id" %in% names(df)) df$app_id <- rep(app_id, nrow(df))
+  if (!"app_id" %in% names(df)) df$app_id <- rep(target_app_id, nrow(df))
   if (!"entry_date" %in% names(df)) df$entry_date <- as.Date(NA_real_)[seq_len(nrow(df))]
   if (!"pitcher" %in% names(df)) df$pitcher <- character(nrow(df))
   if (!"throw_type" %in% names(df)) df$throw_type <- character(nrow(df))
@@ -21872,7 +21865,7 @@ load_manual_velocity_entries <- function(app_id = current_school()) {
   if (!"created_at" %in% names(df)) df$created_at <- rep(as.character(Sys.time()), nrow(df))
   df <- df %>%
     dplyr::mutate(
-      app_id = rep(as.character(app_id), dplyr::n()),
+      app_id = target_app_id,
       entry_date = suppressWarnings(as.Date(entry_date)),
       pitcher = as.character(pitcher %||% ""),
       throw_type = as.character(throw_type %||% ""),
@@ -21882,7 +21875,7 @@ load_manual_velocity_entries <- function(app_id = current_school()) {
       notes = as.character(notes %||% ""),
       created_at = suppressWarnings(as.POSIXct(created_at, tz = "UTC"))
     )
-  df[df$app_id == app_id, , drop = FALSE]
+  df[df$app_id == target_app_id, , drop = FALSE]
 }
 
 save_manual_velocity_entries <- function(entries, app_id = current_school()) {

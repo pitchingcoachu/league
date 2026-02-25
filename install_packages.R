@@ -2,9 +2,11 @@ options(repos = c(CRAN = "https://cloud.r-project.org/"))
 
 pkgs <- c(
   "rsconnect",
-  "shiny", "dplyr", "DT", "ggplot2",
-  "readr", "stringr", "curl",
-  "DBI", "RPostgres", "digest"
+  "shiny", "shinyjs", "dplyr", "DT",
+  "ggplot2", "ggiraph", "gridExtra", "patchwork", "hexbin", "MASS",
+  "plotly", "readr", "stringr", "curl", "lubridate", "httr2",
+  "DBI", "RPostgres", "digest", "rlang",
+  "colourpicker", "memoise", "shinymanager", "RColorBrewer"
 )
 
 for (p in pkgs) {

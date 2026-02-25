@@ -35,6 +35,9 @@ girafe_transparent <- function(..., bg = "transparent") {
   do.call(ggiraph::girafe, args)
 }
 
+# Minimal runtime flag: keeps UI/pages identical but avoids mounting non-required modules.
+LEAGUE_MINIMAL <- identical(Sys.getenv("LEAGUE_MINIMAL", "0"), "1")
+
 # Optional team scoping: blank = no filter
 if (!exists("TEAM_CODE", inherits = TRUE)) TEAM_CODE <- ""
 
@@ -28206,14 +28209,18 @@ deg_to_clock <- function(x) {
   }, once = TRUE)  # session$clientData reference: docs.posit.co/shiny session reference
   # (Note: Shiny exposes url_* in session$clientData.) :contentReference[oaicite:2]{index=2}
   
-  # Mount the new modules (lazy-run only when their tab is active)
-  mod_hit_server("hit",     is_active = reactive(input$top == "Hitting"), global_date_range = global_date_range)
-  mod_catch_server("catch", is_active = reactive(input$top == "Catching"), global_date_range = global_date_range)
+  # Mount modules needed for the current app variant.
+  if (!isTRUE(LEAGUE_MINIMAL)) {
+    mod_hit_server("hit",     is_active = reactive(input$top == "Hitting"), global_date_range = global_date_range)
+    mod_catch_server("catch", is_active = reactive(input$top == "Catching"), global_date_range = global_date_range)
+  }
   mod_leader_server("leader", is_active = reactive(input$top == "Leaderboard"), global_date_range = global_date_range)
   mod_comp_server("comp",   is_active = reactive(input$top == "Comparison Suite"), global_date_range = global_date_range)
   
   # Mount biomechanics module
-  biomech_server(input, output, session, app_id_fn = reactive(current_school()))
+  if (!isTRUE(LEAGUE_MINIMAL)) {
+    biomech_server(input, output, session, app_id_fn = reactive(current_school()))
+  }
   
   
   # Buttons above Summary table

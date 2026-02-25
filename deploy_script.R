@@ -8,7 +8,7 @@ suppressPackageStartupMessages({
 # Ensure deployment machine has all required packages installed first.
 source("install_packages.R")
 
-required_pkgs <- c("shiny", "dplyr", "DT", "ggplot2")
+required_pkgs <- c("ggiraph", "shiny", "dplyr", "DT", "ggplot2")
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_pkgs) > 0) {
   stop(

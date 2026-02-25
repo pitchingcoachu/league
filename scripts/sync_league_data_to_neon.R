@@ -20,8 +20,18 @@ LEAGUE_CODE <- "LEAGUE"
 
 dir.create(LOCAL_V3_DIR, recursive = TRUE, showWarnings = FALSE)
 
+ftp_url_for_path <- function(path) {
+  # Encode each path segment so spaces/special chars don't break FTP URLs.
+  segs <- strsplit(path, "/", fixed = TRUE)[[1]]
+  enc <- vapply(segs, function(s) {
+    if (!nzchar(s)) return("")
+    curl::curl_escape(s)
+  }, character(1))
+  paste0("ftp://", FTP_HOST, "/", paste(enc, collapse = "/"))
+}
+
 list_ftp_names <- function(path) {
-  url <- paste0("ftp://", FTP_HOST, path)
+  url <- ftp_url_for_path(path)
   tryCatch({
     h <- curl::new_handle(userpwd = FTP_USERPWD)
     curl::handle_setopt(h, ftp_use_epsv = FALSE, dirlistonly = TRUE)
@@ -34,7 +44,7 @@ list_ftp_names <- function(path) {
 download_ftp_file <- function(remote_path, local_path) {
   dir.create(dirname(local_path), recursive = TRUE, showWarnings = FALSE)
   if (file.exists(local_path)) return(TRUE)
-  url <- paste0("ftp://", FTP_HOST, remote_path)
+  url <- ftp_url_for_path(remote_path)
   tryCatch({
     h <- curl::new_handle(userpwd = FTP_USERPWD)
     curl::handle_setopt(h, ftp_use_epsv = FALSE)

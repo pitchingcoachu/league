@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS public.pitch_events (
   OutsOnPlay text,
   Batter text,
   Catcher text,
+  PitcherTeam text,
+  BatterTeam text,
+  CatcherTeam text,
+  HomeTeam text,
+  AwayTeam text,
   VideoClip text,
   VideoClip2 text,
   VideoClip3 text,
@@ -96,3 +101,9 @@ CREATE INDEX IF NOT EXISTS idx_pitch_events_date_brin
 CREATE INDEX IF NOT EXISTS idx_pitch_events_video_partial
   ON public.pitch_events (school_code, session_date DESC)
   WHERE (coalesce(VideoClip, '') <> '' OR coalesce(VideoClip2, '') <> '' OR coalesce(VideoClip3, '') <> '');
+
+ALTER TABLE public.pitch_events ADD COLUMN IF NOT EXISTS pitcherteam text;
+ALTER TABLE public.pitch_events ADD COLUMN IF NOT EXISTS batterteam text;
+ALTER TABLE public.pitch_events ADD COLUMN IF NOT EXISTS catcherteam text;
+ALTER TABLE public.pitch_events ADD COLUMN IF NOT EXISTS hometeam text;
+ALTER TABLE public.pitch_events ADD COLUMN IF NOT EXISTS awayteam text;

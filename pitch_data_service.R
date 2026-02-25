@@ -18,7 +18,8 @@ pitch_data_default_columns <- function() {
     "VertApprAngle", "HorzApprAngle", "PlateLocSide", "PlateLocHeight",
     "PitchCall", "KorBB", "Balls", "Strikes", "SessionType", "PlayID",
     "ExitSpeed", "Angle", "BatterSide", "PlayResult", "TaggedHitType", "OutsOnPlay",
-    "Batter", "Catcher", "PitcherTeam", "BatterTeam", "VideoClip", "VideoClip2", "VideoClip3",
+    "Batter", "Catcher", "PitcherTeam", "BatterTeam", "CatcherTeam", "HomeTeam", "AwayTeam",
+    "VideoClip", "VideoClip2", "VideoClip3",
     "PitchUID", "PitchID", "PitchGuid", "SourceFile", "PitchKey"
   )
 }
@@ -60,6 +61,9 @@ pitch_data_storage_name_map <- function() {
     Catcher = "catcher",
     PitcherTeam = "pitcherteam",
     BatterTeam = "batterteam",
+    CatcherTeam = "catcherteam",
+    HomeTeam = "hometeam",
+    AwayTeam = "awayteam",
     VideoClip = "videoclip",
     VideoClip2 = "videoclip2",
     VideoClip3 = "videoclip3",

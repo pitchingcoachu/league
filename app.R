@@ -5274,8 +5274,8 @@ log_startup_timing <- function(label) {
 }
 log_startup_timing("Begin data import")
 
-# Point to the app's local data folder (works locally & on shinyapps.io)
-data_parent <- normalizePath(file.path(getwd(), "data"), mustWork = TRUE)
+# Point to the app's local data folder. Don't hard-fail if it is absent in deploy bundle.
+data_parent <- normalizePath(file.path(getwd(), "data"), mustWork = FALSE)
 pitch_data_backend_result <- NULL
 pitch_data_loaded_from_backend <- FALSE
 backend_mode <- tolower(trimws(Sys.getenv("PITCH_DATA_BACKEND", "auto")))

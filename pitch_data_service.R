@@ -297,7 +297,7 @@ pitch_data_logger <- function(logger, label) {
 
 pitch_data_db_get_query <- function(con, sql) {
   tryCatch(
-    DBI::dbGetQuery(con, sql),
+    DBI::dbGetQuery(con, sql, immediate = TRUE),
     error = function(e1) {
       msg <- conditionMessage(e1)
       recoverable <- grepl(
@@ -306,9 +306,25 @@ pitch_data_db_get_query <- function(con, sql) {
         ignore.case = TRUE
       )
       if (!recoverable) stop(e1)
-      res <- DBI::dbSendQuery(con, sql)
+      res <- DBI::dbSendQuery(con, sql, immediate = TRUE)
       on.exit(tryCatch(DBI::dbClearResult(res), error = function(...) NULL), add = TRUE)
       DBI::dbFetch(res)
+    }
+  )
+}
+
+pitch_data_db_execute <- function(con, sql) {
+  tryCatch(
+    DBI::dbExecute(con, sql, immediate = TRUE),
+    error = function(e1) {
+      msg <- conditionMessage(e1)
+      recoverable <- grepl(
+        "unnamed prepared statement does not exist|query needs to be bound before fetching",
+        msg,
+        ignore.case = TRUE
+      )
+      if (!recoverable) stop(e1)
+      DBI::dbExecute(con, sql, immediate = TRUE)
     }
   )
 }
@@ -671,7 +687,7 @@ ensure_pitch_data_schema <- function(con = NULL, schema_sql_path = file.path("db
   chunks <- trimws(chunks)
   chunks <- chunks[nzchar(chunks)]
   for (stmt in chunks) {
-    DBI::dbExecute(con, stmt)
+    pitch_data_db_execute(con, stmt)
   }
 
   invisible(TRUE)
@@ -803,7 +819,7 @@ sync_csv_file_to_neon <- function(con, csv_path, school_code = "") {
   }
 
   # File manifest row.
-  DBI::dbExecute(con, sprintf(
+  pitch_data_db_execute(con, sprintf(
     "INSERT INTO %s.schools (school_code) VALUES (%s) ON CONFLICT (school_code) DO NOTHING",
     Sys.getenv("PITCH_DATA_DB_SCHEMA", "public"),
     as.character(DBI::dbQuoteLiteral(con, school_code))
@@ -824,7 +840,7 @@ sync_csv_file_to_neon <- function(con, csv_path, school_code = "") {
     local_mtime,
     nrow(df)
   )
-  DBI::dbExecute(con, up_sql)
+  pitch_data_db_execute(con, up_sql)
 
   file_id_sql <- sprintf(
     "SELECT file_id FROM %s WHERE school_code = %s AND source_file = %s",
@@ -841,7 +857,7 @@ sync_csv_file_to_neon <- function(con, csv_path, school_code = "") {
     as.character(DBI::dbQuoteLiteral(con, school_code)),
     as.integer(file_id)
   )
-  DBI::dbExecute(con, del_sql)
+  pitch_data_db_execute(con, del_sql)
 
   df$school_code <- school_code
   df$file_id <- as.integer(file_id)

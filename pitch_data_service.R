@@ -179,6 +179,11 @@ get_pitch_data_postgres_config <- function() {
     cfg <- read_pitch_data_db_config(cfg_path)
     driver <- tolower(pitch_data_or(cfg$driver, ""))
     if (!is.null(cfg) && driver %in% c("postgres", "postgresql", "neon")) {
+      cfg_url <- pitch_data_or(cfg$url, "")
+      if (nzchar(cfg_url)) {
+        parsed_cfg <- pitch_data_parse_postgres_uri(cfg_url)
+        if (!is.null(parsed_cfg)) return(parsed_cfg)
+      }
       host <- pitch_data_or(cfg$host, "")
       user <- pitch_data_or(cfg$user, "")
       password <- pitch_data_or(cfg$password, "")

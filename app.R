@@ -1046,6 +1046,11 @@ get_pitch_mod_postgres_config <- function() {
   if (is.null(cfg)) return(NULL)
   driver <- tolower(cfg$driver %||% "")
   if (!driver %in% c("postgres", "postgresql", "neon")) return(NULL)
+  cfg_url <- cfg$url %||% ""
+  if (nzchar(cfg_url)) {
+    parsed <- parse_pitch_mod_postgres_uri(cfg_url)
+    if (!is.null(parsed)) return(parsed)
+  }
   port_val <- suppressWarnings(as.integer(cfg$port %||% "5432"))
   if (is.na(port_val) || port_val <= 0) port_val <- 5432
 
@@ -5278,7 +5283,9 @@ log_startup_timing("Begin data import")
 data_parent <- normalizePath(file.path(getwd(), "data"), mustWork = FALSE)
 pitch_data_backend_result <- NULL
 pitch_data_loaded_from_backend <- FALSE
-backend_mode <- tolower(trimws(Sys.getenv("PITCH_DATA_BACKEND", "auto")))
+# On shinyapps, default to Postgres/Neon unless explicitly overridden.
+default_backend_mode <- if (nzchar(Sys.getenv("SHINY_PORT", ""))) "postgres" else "auto"
+backend_mode <- tolower(trimws(Sys.getenv("PITCH_DATA_BACKEND", default_backend_mode)))
 postgres_backend_required <- backend_mode %in% c("postgres", "neon", "pg")
 
 pitch_data_backend_result <- tryCatch(
@@ -5334,7 +5341,16 @@ if (!pitch_data_loaded_from_backend) {
   all_csvs <- all_csvs[vapply(all_csvs, is_league_source_file, logical(1))]
   log_startup_timing(sprintf("Discovered %d league v3 CSV files", length(all_csvs)))
 
-  if (!length(all_csvs)) stop("No CSVs found under: ", data_parent)
+  if (!length(all_csvs)) {
+    cfg <- tryCatch(pitch_data_backend_config(), error = function(e) list(type = "csv"))
+    if (identical(cfg$type, "postgres")) {
+      stop(
+        "No local CSV fallback files were found and Neon/Postgres is not loading data. ",
+        "Provide Neon DB config via auth_db_config.yml (or set PITCH_DATA_BACKEND/PITCH_DATA_DB_URL env vars)."
+      )
+    }
+    stop("No CSVs found under: ", data_parent)
+  }
 } else {
   all_csvs <- unique(as.character(all_csvs %||% character(0)))
 }
@@ -21730,6 +21746,11 @@ get_manual_velocity_db_config <- function() {
   if (is.null(cfg)) return(NULL)
   driver <- tolower(cfg$driver %||% "")
   if (!driver %in% c("postgres", "postgresql", "neon")) return(NULL)
+  cfg_url <- cfg$url %||% ""
+  if (nzchar(cfg_url)) {
+    parsed <- parse_pitch_mod_postgres_uri(cfg_url)
+    if (!is.null(parsed)) return(parsed)
+  }
   port_val <- suppressWarnings(as.integer(cfg$port %||% "5432"))
   if (is.na(port_val) || port_val <= 0) port_val <- 5432
   list(

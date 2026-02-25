@@ -59,6 +59,15 @@ jobs:
           PITCH_DATA_CACHE_TTL_SEC=900
           EOF
 
+      - name: Write bundled DB config for shinyapps runtime
+        run: |
+          cat > auth_db_config.yml <<'EOF'
+          driver: postgres
+          url: ${{ secrets.PITCH_DATA_DB_URL }}
+          sslmode: require
+          channel_binding: require
+          EOF
+
       - name: Install packages
         env:
           R_LIBS_USER: ~/R-lib

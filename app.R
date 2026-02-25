@@ -38311,5 +38311,5 @@ deg_to_clock <- function(x) {
 }
 # ---------- Run ----------
 app <- shinyApp(ui = ui, server = server)
-if (!identical(Sys.getenv("LEAGUE_SOURCE_ONLY", "0"), "1")) app
+app
 # Shiny pitching report with per-player privacy + admin view + customized Stuff+ metric per pitch type

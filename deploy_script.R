@@ -22,7 +22,7 @@ if (length(missing_pkgs) > 0) {
 
 deployApp(
   appDir = ".",
-  appPrimaryDoc = "app_minimal.R",
+  appPrimaryDoc = "app.R",
   appName = "leaguedata",
   forceUpdate = TRUE,
   launch.browser = FALSE,

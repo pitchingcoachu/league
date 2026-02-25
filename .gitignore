@@ -1,0 +1,8 @@
+.DS_Store
+.Rhistory
+.RData
+.Renviron
+data/v3/
+rsconnect/
+packrat/
+renv/

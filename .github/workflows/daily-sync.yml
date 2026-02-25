@@ -9,6 +9,8 @@ on:
 jobs:
   sync-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      R_LIBS_USER: ~/R-lib
 
     steps:
       - name: Checkout repository
@@ -27,6 +29,17 @@ jobs:
             libssl-dev \
             libxml2-dev
 
+      - name: Create R library path
+        run: mkdir -p ~/R-lib
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ~/R-lib
+          key: ${{ runner.os }}-r-lib-${{ hashFiles('install_packages.R') }}
+          restore-keys: |
+            ${{ runner.os }}-r-lib-
+
       - name: Write .Renviron
         run: |
           cat > .Renviron <<'EOF'
@@ -38,6 +51,8 @@ jobs:
           EOF
 
       - name: Install packages
+        env:
+          R_LIBS_USER: ~/R-lib
         run: Rscript install_packages.R
 
       - name: Configure rsconnect
@@ -45,11 +60,16 @@ jobs:
           SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
           SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
           SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
+          R_LIBS_USER: ~/R-lib
         run: |
           Rscript -e "rsconnect::setAccountInfo(name='${{ secrets.SHINYAPPS_ACCOUNT }}', token='${{ secrets.SHINYAPPS_TOKEN }}', secret='${{ secrets.SHINYAPPS_SECRET }}')"
 
       - name: Sync league data to Neon
+        env:
+          R_LIBS_USER: ~/R-lib
         run: Rscript scripts/sync_league_data_to_neon.R
 
       - name: Deploy to shinyapps.io
+        env:
+          R_LIBS_USER: ~/R-lib
         run: Rscript deploy_script.R

@@ -8,7 +8,7 @@ suppressPackageStartupMessages({
 # Ensure deployment machine has all required packages installed first.
 source("install_packages.R")
 
-required_pkgs <- c("ggiraph")
+required_pkgs <- c("shiny", "dplyr", "DT", "ggplot2")
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_pkgs) > 0) {
   stop(
@@ -22,6 +22,7 @@ if (length(missing_pkgs) > 0) {
 
 deployApp(
   appDir = ".",
+  appPrimaryDoc = "app_minimal.R",
   appName = "leaguedata",
   forceUpdate = TRUE,
   launch.browser = FALSE,

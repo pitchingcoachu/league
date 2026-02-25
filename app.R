@@ -887,8 +887,12 @@ library(curl)  # for curl::form_file
 library(DBI)   # for database operations
 library(RSQLite)  # for SQLite database
 
-# Source helper for mapping uploads
-source("video_map_helpers.R")
+# Source helper for mapping uploads (optional in some deployments)
+if (file.exists("video_map_helpers.R")) {
+  source("video_map_helpers.R")
+} else {
+  message("video_map_helpers.R not found; skipping optional video map Neon helpers.")
+}
 source("pitch_data_service.R")
 
 # Configure Cloudinary (recommended simple host for images/videos)

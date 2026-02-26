@@ -2149,8 +2149,8 @@ load_pitch_modifications_db <- function(pitch_data, verbose = TRUE) {
 
     tbl_clause <- as.character(pitch_mod_table_clause(con))
     ns_clause <- pitch_mod_namespace_clause(con)
-    mods <- try(dbGetQuery(con, sprintf("SELECT * FROM %s WHERE namespace = %s ORDER BY created_at", tbl_clause, ns_clause)), silent = TRUE)
-    if (inherits(mods, "error") || !nrow(mods)) {
+    mods <- try(db_safe_get_query(con, sprintf("SELECT * FROM %s WHERE namespace = %s ORDER BY created_at", tbl_clause, ns_clause)), silent = TRUE)
+    if (inherits(mods, "try-error") || !is.data.frame(mods) || !nrow(mods)) {
       return(list(
         data = ensure_pitch_keys(pitch_data) %>% mutate(original_row_id = row_number()),
         applied_count = 0,
@@ -13196,13 +13196,17 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
     })
     
     
-    # Default the date range to the most recent date with data for the chosen domain/sessionType
+    # Initialize date range to full available span once per module load.
+    lb_dates_initialized <- reactiveVal(FALSE)
     observe({
       req(is_active())
+      if (isTRUE(lb_dates_initialized())) return()
       base <- team_base()
-      last_date <- suppressWarnings(max(base$Date, na.rm = TRUE))
-      if (is.finite(last_date)) {
-        updateDateRangeInput(session, "dates", start = last_date, end = last_date)
+      d_min <- suppressWarnings(min(base$Date, na.rm = TRUE))
+      d_max <- suppressWarnings(max(base$Date, na.rm = TRUE))
+      if (is.finite(d_min) && is.finite(d_max)) {
+        updateDateRangeInput(session, "dates", start = d_min, end = d_max)
+        lb_dates_initialized(TRUE)
       }
     })
     
@@ -13347,6 +13351,7 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
       
       res_mode <- resolve_table_mode_global(input$lbMode, input$lbCustomCols)
       mode <- res_mode$mode
+      if (is.null(mode) || !nzchar(mode)) mode <- "Stuff"
       custom <- res_mode$cols
       # Check for Raw Data mode first
       if (identical(mode, "Raw Data")) {

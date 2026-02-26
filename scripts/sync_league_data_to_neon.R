@@ -147,6 +147,12 @@ sync_league <- function() {
 
   message(sprintf("League sync complete | total=%d ok=%d skipped=%d failed=%d rows=%d",
                   length(remote_files), ok, skipped, fail, total_rows))
+
+  tryCatch(
+    refresh_pitch_data_rollup(con, school_code = LEAGUE_CODE),
+    error = function(e) message("Rollup refresh failed: ", e$message)
+  )
+
   invisible(total_rows)
 }
 

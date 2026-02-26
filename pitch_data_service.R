@@ -698,6 +698,153 @@ ensure_pitch_data_schema <- function(con = NULL, schema_sql_path = file.path("db
   invisible(TRUE)
 }
 
+refresh_pitch_data_rollup <- function(con = NULL, school_code = "") {
+  close_con <- FALSE
+  if (is.null(con)) {
+    con <- pitch_data_db_connect()
+    if (is.null(con)) stop("No Postgres backend configured for pitch data")
+    close_con <- TRUE
+  }
+  on.exit(if (close_con) tryCatch(DBI::dbDisconnect(con), error = function(...) NULL), add = TRUE)
+
+  schema <- gsub("[^A-Za-z0-9_]", "_", Sys.getenv("PITCH_DATA_DB_SCHEMA", "public"))
+  events_tbl <- DBI::Id(schema = schema, table = Sys.getenv("PITCH_DATA_DB_TABLE", "pitch_events"))
+  rollup_tbl <- DBI::Id(schema = schema, table = Sys.getenv("PITCH_DATA_DB_ROLLUP_TABLE", "pitch_events_rollup_daily"))
+  school_code <- toupper(trimws(as.character(school_code)))
+  if (!nzchar(school_code)) school_code <- toupper(trimws(Sys.getenv("TEAM_CODE", "")))
+  if (!nzchar(school_code)) school_code <- "LEAGUE"
+
+  create_sql <- sprintf(
+    "CREATE TABLE IF NOT EXISTS %s (
+       school_code TEXT NOT NULL,
+       session_date DATE,
+       session_type TEXT,
+       pitcher_team TEXT,
+       batter_team TEXT,
+       pitcher TEXT,
+       pitcher_throws TEXT,
+       batter_side TEXT,
+       tagged_pitch_type TEXT,
+       pitches BIGINT NOT NULL,
+       swings BIGINT NOT NULL,
+       takes BIGINT NOT NULL,
+       called_strikes BIGINT NOT NULL,
+       whiffs BIGINT NOT NULL,
+       in_zone BIGINT NOT NULL,
+       chases BIGINT NOT NULL,
+       fps_opps BIGINT NOT NULL,
+       fps_strikes BIGINT NOT NULL,
+       ev_sum DOUBLE PRECISION NOT NULL,
+       ev_n BIGINT NOT NULL,
+       la_sum DOUBLE PRECISION NOT NULL,
+       la_n BIGINT NOT NULL,
+       velo_sum DOUBLE PRECISION NOT NULL,
+       velo_n BIGINT NOT NULL,
+       velo_max DOUBLE PRECISION,
+       ivb_sum DOUBLE PRECISION NOT NULL,
+       ivb_n BIGINT NOT NULL,
+       hb_sum DOUBLE PRECISION NOT NULL,
+       hb_n BIGINT NOT NULL,
+       spin_sum DOUBLE PRECISION NOT NULL,
+       spin_n BIGINT NOT NULL,
+       ext_sum DOUBLE PRECISION NOT NULL,
+       ext_n BIGINT NOT NULL,
+       updated_at TIMESTAMP NOT NULL DEFAULT now(),
+       PRIMARY KEY (
+         school_code, session_date, session_type, pitcher_team, batter_team,
+         pitcher, pitcher_throws, batter_side, tagged_pitch_type
+       )
+     )",
+    as.character(DBI::dbQuoteIdentifier(con, rollup_tbl))
+  )
+  pitch_data_db_execute(con, create_sql)
+
+  idx_sql <- sprintf(
+    "CREATE INDEX IF NOT EXISTS %s ON %s (school_code, session_date, pitcher_team, batter_team, tagged_pitch_type)",
+    as.character(DBI::dbQuoteIdentifier(con, "idx_pitch_events_rollup_daily_school_date_team")),
+    as.character(DBI::dbQuoteIdentifier(con, rollup_tbl))
+  )
+  pitch_data_db_execute(con, idx_sql)
+
+  delete_sql <- sprintf(
+    "DELETE FROM %s WHERE school_code = %s",
+    as.character(DBI::dbQuoteIdentifier(con, rollup_tbl)),
+    as.character(DBI::dbQuoteLiteral(con, school_code))
+  )
+  pitch_data_db_execute(con, delete_sql)
+
+  insert_sql <- sprintf(
+    "INSERT INTO %s (
+       school_code, session_date, session_type, pitcher_team, batter_team,
+       pitcher, pitcher_throws, batter_side, tagged_pitch_type,
+       pitches, swings, takes, called_strikes, whiffs, in_zone, chases,
+       fps_opps, fps_strikes,
+       ev_sum, ev_n, la_sum, la_n,
+       velo_sum, velo_n, velo_max,
+       ivb_sum, ivb_n, hb_sum, hb_n,
+       spin_sum, spin_n, ext_sum, ext_n, updated_at
+     )
+     SELECT
+       e.school_code,
+       e.session_date::date AS session_date,
+       e.session_type,
+       e.pitcherteam,
+       e.batterteam,
+       e.pitcher,
+       e.pitcherthrows,
+       e.batterside,
+       e.taggedpitchtype,
+       COUNT(*)::bigint AS pitches,
+       SUM(CASE WHEN e.pitchcall IN ('StrikeSwinging','FoulBallNotFieldable','FoulBallFieldable','FoulBall','InPlay') THEN 1 ELSE 0 END)::bigint AS swings,
+       SUM(CASE WHEN e.pitchcall NOT IN ('StrikeSwinging','FoulBallNotFieldable','FoulBallFieldable','FoulBall','InPlay') THEN 1 ELSE 0 END)::bigint AS takes,
+       SUM(CASE WHEN e.pitchcall = 'StrikeCalled' THEN 1 ELSE 0 END)::bigint AS called_strikes,
+       SUM(CASE WHEN e.pitchcall = 'StrikeSwinging' THEN 1 ELSE 0 END)::bigint AS whiffs,
+       SUM(CASE WHEN
+           NULLIF(e.platelocside, '')::double precision BETWEEN -0.83 AND 0.83
+           AND NULLIF(e.platelocheight, '')::double precision BETWEEN 1.5 AND 3.5
+         THEN 1 ELSE 0 END)::bigint AS in_zone,
+       SUM(CASE WHEN
+           e.pitchcall IN ('StrikeSwinging','FoulBallNotFieldable','FoulBallFieldable','FoulBall','InPlay')
+           AND (
+             NULLIF(e.platelocside, '')::double precision < -0.83
+             OR NULLIF(e.platelocside, '')::double precision > 0.83
+             OR NULLIF(e.platelocheight, '')::double precision < 1.5
+             OR NULLIF(e.platelocheight, '')::double precision > 3.5
+           )
+         THEN 1 ELSE 0 END)::bigint AS chases,
+       SUM(CASE WHEN e.balls = '0' AND e.strikes = '0' THEN 1 ELSE 0 END)::bigint AS fps_opps,
+       SUM(CASE WHEN e.balls = '0' AND e.strikes = '0' AND e.pitchcall IN ('InPlay','StrikeSwinging','StrikeCalled','FoulBallNotFieldable','FoulBallFieldable') THEN 1 ELSE 0 END)::bigint AS fps_strikes,
+       SUM(CASE WHEN e.exitspeed ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.exitspeed::double precision ELSE 0 END) AS ev_sum,
+       SUM(CASE WHEN e.exitspeed ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN 1 ELSE 0 END)::bigint AS ev_n,
+       SUM(CASE WHEN e.angle ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.angle::double precision ELSE 0 END) AS la_sum,
+       SUM(CASE WHEN e.angle ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN 1 ELSE 0 END)::bigint AS la_n,
+       SUM(CASE WHEN e.relspeed ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.relspeed::double precision ELSE 0 END) AS velo_sum,
+       SUM(CASE WHEN e.relspeed ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN 1 ELSE 0 END)::bigint AS velo_n,
+       MAX(CASE WHEN e.relspeed ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.relspeed::double precision ELSE NULL END) AS velo_max,
+       SUM(CASE WHEN e.inducedvertbreak ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.inducedvertbreak::double precision ELSE 0 END) AS ivb_sum,
+       SUM(CASE WHEN e.inducedvertbreak ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN 1 ELSE 0 END)::bigint AS ivb_n,
+       SUM(CASE WHEN e.horzbreak ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.horzbreak::double precision ELSE 0 END) AS hb_sum,
+       SUM(CASE WHEN e.horzbreak ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN 1 ELSE 0 END)::bigint AS hb_n,
+       SUM(CASE WHEN e.spinrate ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.spinrate::double precision ELSE 0 END) AS spin_sum,
+       SUM(CASE WHEN e.spinrate ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN 1 ELSE 0 END)::bigint AS spin_n,
+       SUM(CASE WHEN e.extension ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN e.extension::double precision ELSE 0 END) AS ext_sum,
+       SUM(CASE WHEN e.extension ~ '^[+-]?[0-9]*\\.?[0-9]+$' THEN 1 ELSE 0 END)::bigint AS ext_n,
+       now()
+     FROM %s e
+     WHERE e.school_code = %s
+     GROUP BY
+       e.school_code, e.session_date::date, e.session_type, e.pitcherteam, e.batterteam,
+       e.pitcher, e.pitcherthrows, e.batterside, e.taggedpitchtype",
+    as.character(DBI::dbQuoteIdentifier(con, rollup_tbl)),
+    as.character(DBI::dbQuoteIdentifier(con, events_tbl)),
+    as.character(DBI::dbQuoteLiteral(con, school_code))
+  )
+  pitch_data_db_execute(con, insert_sql)
+
+  message("Refreshed pitch data rollup for school_code=", school_code)
+  invisible(TRUE)
+}
+
 sync_csv_file_to_neon <- function(con, csv_path, school_code = "") {
   school_code <- toupper(trimws(as.character(school_code)))
   if (!nzchar(school_code)) school_code <- toupper(trimws(Sys.getenv("TEAM_CODE", "OSU")))
@@ -955,6 +1102,11 @@ sync_csv_tree_to_neon <- function(data_dir = file.path("data"), school_code = ""
   synced_files <- sum(ok) - skipped_files
   message(sprintf("Neon sync complete: files=%d success=%d failed=%d synced=%d skipped=%d rows=%d",
                   length(csvs), sum(ok), sum(!ok), synced_files, skipped_files, total_rows))
+
+  tryCatch(
+    refresh_pitch_data_rollup(con, school_code = school_code),
+    error = function(e) message("Rollup refresh failed: ", e$message)
+  )
 
   invisible(total_rows)
 }

@@ -4398,6 +4398,19 @@ compute_stuff_simple <- function(df, base_type, level) {
     )
 }
 
+can_use_precomputed_default_stuff <- function(df, base_type = "Fastball", level = "College") {
+  identical(base_type, "Fastball") &&
+    identical(level, "College") &&
+    ("Stuff+" %in% names(df))
+}
+
+apply_stuff_fast <- function(df, base_type = "Fastball", level = "College") {
+  if (can_use_precomputed_default_stuff(df, base_type = base_type, level = level)) {
+    return(force_pitch_levels(df))
+  }
+  compute_stuff_simple(df, base_type = base_type, level = level) %>% force_pitch_levels()
+}
+
 
 # Strike zone constants
 ZONE_LEFT   <- -0.88
@@ -5274,6 +5287,21 @@ log_startup_timing <- function(label) {
   message(sprintf("⏱️ [startup] %s | step=%.2fs total=%.2fs", label, step_secs, total_secs))
   startup_time_last <<- now
 }
+
+# Runtime profiling hooks (enable with LEAGUE_PERF_LOG=1).
+perf_logs_enabled <- tolower(trimws(Sys.getenv("LEAGUE_PERF_LOG", "1"))) %in% c("1", "true", "yes", "on")
+perf_log_min_sec <- suppressWarnings(as.numeric(Sys.getenv("LEAGUE_PERF_LOG_MIN_SEC", "0.15")))
+if (!is.finite(perf_log_min_sec) || perf_log_min_sec < 0) perf_log_min_sec <- 0.15
+perf_now <- function() as.numeric(proc.time()[["elapsed"]])
+perf_log_runtime <- function(label, t0, rows = NA_integer_, extra = "") {
+  if (!isTRUE(perf_logs_enabled)) return(invisible(NULL))
+  dt <- perf_now() - t0
+  if (!is.finite(dt) || dt < perf_log_min_sec) return(invisible(NULL))
+  rows_txt <- if (is.finite(rows)) sprintf(" rows=%s", format(as.integer(rows), big.mark = ",")) else ""
+  extra_txt <- if (nzchar(extra)) paste0(" ", extra) else ""
+  message(sprintf("⏱️ [runtime] %s | sec=%.3f%s%s", label, dt, rows_txt, extra_txt))
+  invisible(NULL)
+}
 log_startup_timing("Begin data import")
 
 # Point to the app's local data folder. Don't hard-fail if it is absent in deploy bundle.
@@ -6113,6 +6141,14 @@ filter_by_team_code <- function(df, team_code, domain = "Pitching") {
 }
 
 pitch_data_pitching <- ensure_pitch_keys(pitch_data_pitching)
+
+# Precompute default Stuff+ once so heavy table reactives can reuse it.
+pitch_data_pitching <- apply_stuff_fast(
+  pitch_data_pitching,
+  base_type = "Fastball",
+  level = "College"
+)
+log_startup_timing("Precomputed default Stuff+ on pitching dataset")
 
 # Name map for Pitching UI (restricted to the filtered set)
 raw_names_p <- sort(unique(pitch_data_pitching$Pitcher))
@@ -8798,7 +8834,7 @@ mod_hit_server <- function(id, is_active = shiny::reactive(TRUE), global_date_ra
       if (nnz(input$pcMin)) df <- dplyr::filter(df, PitchNumber >= input$pcMin)
       if (nnz(input$pcMax)) df <- dplyr::filter(df, PitchNumber <= input$pcMax)
       
-      df2 <- compute_stuff_simple(df, base_type = "Fastball", level = "College") %>% force_pitch_levels()
+      df2 <- apply_stuff_fast(df, base_type = "Fastball", level = "College")
       if (!("All" %in% pitch_types)) df2 <- dplyr::filter(df2, TaggedPitchType %in% pitch_types)
       df2
     })
@@ -10871,8 +10907,7 @@ mod_catch_server <- function(id, is_active = shiny::reactive(TRUE), global_date_
       if (nnz(input$pcMax)) df <- dplyr::filter(df, PitchNumber <= input$pcMax)
       
       # Stuff+ calc
-      df2 <- compute_stuff_simple(df, base_type = input$stuffBase, level = input$stuffLevel) %>%
-        force_pitch_levels() %>%
+      df2 <- apply_stuff_fast(df, base_type = input$stuffBase, level = input$stuffLevel) %>%
         dplyr::mutate(Result = factor(compute_result(PitchCall, PlayResult), levels = result_levels))
       
       # Pitch types (post-derive)
@@ -11872,7 +11907,7 @@ mod_camps_server <- function(id, is_active = shiny::reactive(TRUE)) {
       if (nnz(input$pcMax)) df <- dplyr::filter(df, PitchNumber <= input$pcMax)
       
       # Compute Stuff+ (harmless if not used)
-      df2 <- compute_stuff_simple(df, base_type = "Fastball", level = "College") %>% force_pitch_levels()
+      df2 <- apply_stuff_fast(df, base_type = "Fastball", level = "College")
       df2
     })
     
@@ -13079,6 +13114,14 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
     # Returns the base dataset for the selected domain & session type,
     # filtered to team-specific rows based on Team selector.
     team_base <- reactive({
+      perf_t0 <- perf_now()
+      perf_rows <- NA_integer_
+      on.exit(perf_log_runtime(
+        "leader.team_base",
+        perf_t0,
+        perf_rows,
+        sprintf("domain=%s team=%s", input$domain %||% "", input$teamType %||% "")
+      ), add = TRUE)
       req(is_active(), input$teamType)
       # Use modified_pitch_data() to match Pitching suite (includes pitch type/pitcher modifications)
       modified_data <- tryCatch(modified_pitch_data(), error = function(e) pitch_data_pitching)
@@ -13093,14 +13136,23 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
       
       # Filter by selected team code from CSV team columns.
       selected_team <- input$teamType %||% "All"
-      if (identical(selected_team, "All")) return(base)
+      if (identical(selected_team, "All")) {
+        perf_rows <- nrow(base)
+        return(base)
+      }
       team_cols <- intersect(
         c("PitcherTeam", "BatterTeam", "CatcherTeam", "HomeTeam", "AwayTeam"),
         names(base)
       )
-      if (!length(team_cols)) return(base[0, , drop = FALSE])
+      if (!length(team_cols)) {
+        out0 <- base[0, , drop = FALSE]
+        perf_rows <- nrow(out0)
+        return(out0)
+      }
       keep <- Reduce(`|`, lapply(team_cols, function(cn) as.character(base[[cn]]) == selected_team))
-      base[which(keep %in% TRUE), , drop = FALSE]
+      out <- base[which(keep %in% TRUE), , drop = FALSE]
+      perf_rows <- nrow(out)
+      out
     })
     
     
@@ -13119,6 +13171,10 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
       req(is_active(), input$dates, input$hand, input$zoneLoc, input$inZone, input$qpLocations)
       
       df <- team_base()
+
+      # Date range first (usually narrow) to reduce downstream work.
+      df <- dplyr::filter(df, Date >= input$dates[1], Date <= input$dates[2])
+      if (!nrow(df)) return(df)
       
       # ⛔️ Drop warmups & blank pitch types (match Pitching suite filtering)
       if ("TaggedPitchType" %in% names(df)) {
@@ -13130,9 +13186,6 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
       if ("PitchSession" %in% names(df)) {
         df <- dplyr::filter(df, is.na(PitchSession) | PitchSession != "Warmup")
       }
-      
-      # Date range
-      df <- dplyr::filter(df, Date >= input$dates[1], Date <= input$dates[2])
       
       # Pitcher hand
       if (input$hand != "All") df <- dplyr::filter(df, PitcherThrows == input$hand)
@@ -13179,8 +13232,7 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
         if (!is.na(ue)) df <- dplyr::filter(df, norm_email_local(Email) == norm_email_local(ue))
       }
       
-      compute_stuff_simple(df, base_type = "Fastball", level = "College") %>%
-        force_pitch_levels()
+      apply_stuff_fast(df, base_type = "Fastball", level = "College")
     })
     
     # Domain-aware filtered data (LSU-only)
@@ -14662,8 +14714,7 @@ mod_comp_server <- function(id, is_active = shiny::reactive(TRUE), global_date_r
       df <- apply_pitch_results_filter(df, pr_res)
       if (!nrow(df)) return(df)
       
-      df2 <- compute_stuff_simple(df, base_type = "Fastball", level = "College") %>%
-        force_pitch_levels() %>%
+      df2 <- apply_stuff_fast(df, base_type = "Fastball", level = "College") %>%
         dplyr::mutate(Result = factor(compute_result(PitchCall, PlayResult), levels = result_levels))
       attr(df2, "domain") <- dom
       df2
@@ -18291,7 +18342,7 @@ custom_reports_server <- function(id) {
       # Calculate Stuff+ if not present (using same method as other pages)
       if (!"Stuff+" %in% names(df) || all(is.na(df$`Stuff+`))) {
         df <- tryCatch({
-          compute_stuff_simple(df, base_type = "Fastball", level = "College")
+          apply_stuff_fast(df, base_type = "Fastball", level = "College")
         }, error = function(e) {
           message("Could not compute Stuff+ in custom reports: ", e$message)
           df$`Stuff+` <- NA_real_
@@ -28721,12 +28772,24 @@ deg_to_clock <- function(x) {
   
   # 2) Filtered data
   filtered_data <- reactive({
+    perf_t0 <- perf_now()
+    perf_rows <- NA_integer_
+    on.exit(perf_log_runtime(
+      "pitch.filtered_data",
+      perf_t0,
+      perf_rows,
+      sprintf("team=%s sess=%s pitcher=%s", input$teamType %||% "", input$sessionType %||% "", input$pitcher %||% "")
+    ), add = TRUE)
     req(input$sessionType, input$hand, input$zoneLoc, input$inZone, input$qpLocations, input$teamType)
     
     is_valid_dates <- function(d) !is.null(d) && length(d) == 2 && all(is.finite(d))
     nnz <- function(x) !is.null(x) && !is.na(x)
     
-    if (!is_valid_dates(input$dates)) return(modified_pitch_data()[0, , drop = FALSE])
+    if (!is_valid_dates(input$dates)) {
+      out0 <- modified_pitch_data()[0, , drop = FALSE]
+      perf_rows <- nrow(out0)
+      return(out0)
+    }
     
     pitch_types <- if (is.null(input$pitchType) || !length(input$pitchType)) "All" else input$pitchType
     
@@ -28740,6 +28803,13 @@ deg_to_clock <- function(x) {
         df,
         as.character(PitcherTeam) == selected_team | as.character(BatterTeam) == selected_team
       )
+    }
+
+    # Date range first (usually narrow) to reduce downstream work.
+    df <- dplyr::filter(df, Date >= input$dates[1], Date <= input$dates[2])
+    if (!nrow(df)) {
+      perf_rows <- 0L
+      return(df)
     }
     
     # ⛔️ Drop warmups & blank pitch types
@@ -28757,9 +28827,6 @@ deg_to_clock <- function(x) {
     if (!is.null(input$batterSide) && input$batterSide != "All") {
       df <- df %>% dplyr::filter(SessionType != "Live" | (SessionType == "Live" & BatterSide == input$batterSide))
     }
-    
-    # Dates
-    df <- dplyr::filter(df, Date >= input$dates[1], Date <= input$dates[2])
     
     # Pitcher & hand
     pick <- input$pitcher
@@ -28824,8 +28891,7 @@ deg_to_clock <- function(x) {
     if (!nrow(df)) return(df[0, , drop = FALSE])
     
     # Derived fields
-    df2 <- compute_stuff_simple(df, base_type = input$stuffBase, level = input$stuffLevel) %>%
-      force_pitch_levels() %>%
+    df2 <- apply_stuff_fast(df, base_type = input$stuffBase, level = input$stuffLevel) %>%
       dplyr::mutate(Result = factor(compute_result(PitchCall, PlayResult), levels = result_levels))
     
     # Pitch type after derive
@@ -28899,8 +28965,7 @@ deg_to_clock <- function(x) {
     }
     
     
-    df2 <- compute_stuff_simple(df, input$stuffBase, input$stuffLevel) %>%
-      force_pitch_levels() %>%
+    df2 <- apply_stuff_fast(df, base_type = input$stuffBase, level = input$stuffLevel) %>%
       dplyr::mutate(Result = factor(compute_result(PitchCall, PlayResult), levels = result_levels))
     
     if (!("All" %in% pitch_types)) df2 <- dplyr::filter(df2, TaggedPitchType %in% pitch_types)
@@ -29182,6 +29247,7 @@ deg_to_clock <- function(x) {
     if (nnz(input$hbMin))   df <- dplyr::filter(df, HorzBreak        >= input$hbMin)
     if (nnz(input$hbMax))   df <- dplyr::filter(df, HorzBreak        <= input$hbMax)
     
+    perf_rows <- nrow(df)
     df
   })
   
@@ -35243,6 +35309,16 @@ deg_to_clock <- function(x) {
     cat("X variable:", input$corr_var_x, "\n") 
     cat("Y variable:", input$corr_var_y, "\n")
     cat("Aggregation:", input$corr_aggregation, "\n")
+    perf_t0 <- perf_now()
+    on.exit({
+      rows_out <- if (exists("data", inherits = FALSE) && is.data.frame(data)) nrow(data) else NA_integer_
+      perf_log_runtime(
+        "corr_data.analyze",
+        perf_t0,
+        rows_out,
+        sprintf("domain=%s team=%s", input$corr_domain %||% "", input$corr_teamType %||% "")
+      )
+    }, add = TRUE)
     
     req(input$corr_domain, input$corr_var_x, input$corr_var_y)
     

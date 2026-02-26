@@ -87,6 +87,12 @@ jobs:
           R_LIBS_USER: ~/R-lib
         run: Rscript scripts/sync_league_data_to_neon.R
 
+      - name: Profile league app data path
+        continue-on-error: true
+        env:
+          R_LIBS_USER: ~/R-lib
+        run: Rscript scripts/profile_league_perf.R
+
       - name: Deploy to shinyapps.io
         env:
           R_LIBS_USER: ~/R-lib

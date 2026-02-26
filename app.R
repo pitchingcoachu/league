@@ -83,10 +83,7 @@ if (is.null(school_display_name) || !nzchar(school_display_name)) {
   school_display_name <- TEAM_CODE
 }
 
-TEAM_CHOICES <- c("All" = "All",
-                  setNames(TEAM_CODE, school_display_name),
-                  "Opponents" = "Opponents",
-                  "Campers" = "Campers")
+TEAM_CHOICES <- c("All" = "All")
 
 default_colors <- list(
   primary = "#0a2240",
@@ -6040,18 +6037,8 @@ session_type_choices <- function() {
 
 # Marker-based school verification removed: keep configured allowed player lists as-is.
 
-# Keep the full dataset for Hitting & global refs
-# but build a PITCHING-ONLY copy that is filtered to the whitelist
-# (affects Pitching, Comparison, Leaderboard modules that use pitch_data_pitching)
-# If you ever want admins to bypass this, wrap the filter in `if (!is_admin()) { ... }`.
-pitch_data_pitching <- pitch_data %>%
-  dplyr::mutate(
-    Pitcher = as.character(Pitcher),
-    # Build a "First Last" display from "Last, First" for matching either style
-    .disp = ifelse(grepl(",", Pitcher),
-                   paste0(trimws(sub(".*,", "", Pitcher)), " ", trimws(sub(",.*", "", Pitcher))),
-                   Pitcher)
-  )
+# Keep the full dataset for pitching views (league app should include all teams/players).
+pitch_data_pitching <- pitch_data
 
 # Accept either "Last, First" or "First Last" in ALLOWED_PITCHERS
 ALLOWED_PITCHERS_DL <- unique(c(
@@ -6089,29 +6076,41 @@ workload_filter_players_by_team <- function(names, team_type = "All") {
   if (!nzchar(team_type) || identical(team_type, "All")) {
     return(sort(unique(names)))
   }
-  norm_names <- norm_name_ci(names)
-  campers_norm <- norm_name_ci(ALLOWED_CAMPERS_DL)
-  pitchers_norm <- norm_name_ci(ALLOWED_PITCHERS_DL)
-  known_norm <- unique(c(campers_norm, pitchers_norm))
-  if (team_type == "Campers") {
-    mask <- norm_names %in% campers_norm
-  } else if (team_type == TEAM_CODE) {
-    mask <- norm_names %in% pitchers_norm
-  } else if (team_type == "Opponents") {
-    mask <- !(norm_names %in% known_norm)
+  if (team_type %in% unique(c(as.character(pitch_data$PitcherTeam), as.character(pitch_data$BatterTeam)))) {
+    mask <- names %in% unique(c(
+      as.character(pitch_data$Pitcher[pitch_data$PitcherTeam == team_type]),
+      as.character(pitch_data$Pitcher[pitch_data$BatterTeam == team_type]),
+      as.character(pitch_data$Batter[pitch_data$PitcherTeam == team_type]),
+      as.character(pitch_data$Batter[pitch_data$BatterTeam == team_type])
+    ))
   } else {
-    mask <- rep(TRUE, length(norm_names))
+    mask <- rep(FALSE, length(names))
   }
   res <- names[mask]
   res <- res[!is.na(res)]
   sort(unique(res))
 }
 
-pitch_data_pitching <- pitch_data_pitching %>%
-  dplyr::mutate(.norm_raw  = norm_name_ci(Pitcher),
-                .norm_disp = norm_name_ci(.disp)) %>%
-  dplyr::filter(.norm_raw %in% allowed_norm | .norm_disp %in% allowed_norm) %>%
-  dplyr::select(-.disp, -.norm_raw, -.norm_disp)
+team_codes <- sort(unique(c(as.character(pitch_data$PitcherTeam), as.character(pitch_data$BatterTeam))))
+team_codes <- team_codes[!is.na(team_codes) & nzchar(trimws(team_codes))]
+TEAM_CHOICES <- c("All" = "All", stats::setNames(team_codes, team_codes))
+
+filter_by_team_code <- function(df, team_code, domain = "Pitching") {
+  if (is.null(df) || !nrow(df)) return(df)
+  team_code <- as.character(team_code %||% "All")
+  if (!nzchar(team_code) || identical(team_code, "All")) return(df)
+  domain <- as.character(domain %||% "Pitching")
+  team_cols <- switch(
+    domain,
+    "Hitting" = c("BatterTeam", "PitcherTeam", "HomeTeam", "AwayTeam"),
+    "Catching" = c("CatcherTeam", "PitcherTeam", "BatterTeam", "HomeTeam", "AwayTeam"),
+    c("PitcherTeam", "BatterTeam", "HomeTeam", "AwayTeam")
+  )
+  team_cols <- team_cols[team_cols %in% names(df)]
+  if (!length(team_cols)) return(df[0, , drop = FALSE])
+  keep <- Reduce(`|`, lapply(team_cols, function(cn) as.character(df[[cn]]) == team_code))
+  df[which(keep %in% TRUE), , drop = FALSE]
+}
 
 pitch_data_pitching <- ensure_pitch_keys(pitch_data_pitching)
 
@@ -7292,6 +7291,8 @@ pitch_ui <- function(show_header = FALSE) {
       mainPanel(
         tabsetPanel(
           id = "tabs",
+          type = "hidden",
+          selected = "Data and Performance",
           tabPanel(
             "Summary",
             div(class = "creport-actions",
@@ -7451,43 +7452,6 @@ pitch_ui <- function(show_header = FALSE) {
             ggiraph::girafeOutput("velocityPlot", height = "450px"),
             ggiraph::girafeOutput("velocityByGamePlot", height = "450px"),
             ggiraph::girafeOutput("velocityInningPlot", height = "450px")
-          ),
-          # --- PITCHING HEATMAPS TAB (NON-MODULE UI) ---
-          tabPanel(
-            "HeatMaps",
-            sidebarLayout(
-              sidebarPanel(
-                selectInput("hmChartType", "Select Chart:", choices = c("Heat","Pitch","QP+"), selected = "Heat"),
-                conditionalPanel(
-                  "input.hmChartType=='Heat'",
-                  selectInput(
-                    "hmStat", "Select Stat:",
-                    choices = c(
-                      "Frequency"      = "Frequency",
-                      "Whiff Rate"     = "Whiff Rate",
-                      "Exit Velocity"  = "EV",
-                      "GB Rate"        = "GB Rate",
-                      "Contact Rate"   = "Contact Rate",
-                      "Swing Rate"     = "Swing Rate",
-                      "Run Values"     = "Run Values"
-                    ),
-                    selected = "Frequency"
-                  ),
-                  uiOutput("hmNote")
-                ),
-                conditionalPanel(
-                  "input.hmChartType=='QP+'",
-                  helpText("Requires batter hand + counts from the same family (Ahead, Even, or Behind).")
-                ),
-                uiOutput("locLegend"),
-                width = 3
-              ),
-              mainPanel(
-                conditionalPanel("input.hmChartType=='Heat'",  plotOutput("heatmapsHeatPlot", height = "500px")),
-                conditionalPanel("input.hmChartType=='Pitch'", ggiraph::girafeOutput("heatmapsPitchPlot", height = "500px")),
-                conditionalPanel("input.hmChartType=='QP+'",   ggiraph::girafeOutput("heatmapsQPPlot",   height = "500px"))
-              )
-            )
           ),
           # --- QP LOCATIONS TAB ---
           tabPanel(
@@ -8202,22 +8166,7 @@ mod_hit_server <- function(id, is_active = shiny::reactive(TRUE), global_date_ra
         return(d)
       }
       
-      # Apply team filtering based on selection when no specific player chosen
-      # For HITTING suite: filter by Batter (our hitters)
-      if (!is.null(input$teamType)) {
-        if (input$teamType == "Campers") {
-          # Filter to only allowed campers (as batters)
-          d <- dplyr::filter(d, Batter %in% ALLOWED_CAMPERS)
-        } else if (input$teamType == TEAM_CODE) {
-          # For GCU hitting: show only the approved hitters (exclude campers, opponents)
-          d <- dplyr::filter(d, Batter %in% ALLOWED_HITTERS)
-        } else if (input$teamType == "Opponents") {
-          # Show only opponent batters
-          all_known <- unique(c(ALLOWED_HITTERS, ALLOWED_CAMPERS))
-          d <- dplyr::filter(d, !(Batter %in% all_known))
-        }
-        # If "All" is selected, don't filter - show all data
-      }
+      d <- filter_by_team_code(d, input$teamType %||% "All", domain = "Hitting")
       d
     })
     
@@ -10861,22 +10810,7 @@ mod_catch_server <- function(id, is_active = shiny::reactive(TRUE), global_date_
       # Session type first
       df <- apply_session_type_filter(pitch_data, input$sessionType)
       
-      # ⛔️ Team filtering - Filter by team selection ⛔️
-      if (!is.null(input$teamType)) {
-        all_osu_and_campers <- unique(c(ALLOWED_PITCHERS, ALLOWED_CAMPERS))
-        
-        if (input$teamType == "Campers") {
-          # Filter to only allowed campers (as pitchers)
-          df <- dplyr::filter(df, Pitcher %in% ALLOWED_CAMPERS)
-        } else if (input$teamType == TEAM_CODE) {
-          # Filter to GCU allowed pitchers
-          df <- dplyr::filter(df, Pitcher %in% ALLOWED_PITCHERS)
-        } else if (input$teamType == "Opponents") {
-          # Show only opponent pitchers (anyone NOT in GCU or Campers lists)
-          df <- dplyr::filter(df, !(Pitcher %in% all_osu_and_campers))
-        }
-        # If "All" is selected, don't filter - show all data
-      }
+      df <- filter_by_team_code(df, input$teamType %||% "All", domain = "Catching")
       
       # ⛔️ Drop warmups & blank pitch types
       if ("TaggedPitchType" %in% names(df)) {
@@ -13157,22 +13091,16 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
         "Catching" = apply_session_type_filter(pitch_data, input$sessionType)
       )
       
-      # Filter by team selection
-      if (input$teamType == "Campers") {
-        if (identical(input$domain, "Hitting")) {
-          dplyr::filter(base, Batter %in% ALLOWED_CAMPERS)
-        } else {
-          dplyr::filter(base, Pitcher %in% ALLOWED_CAMPERS)
-        }
-      } else if (input$teamType == TEAM_CODE) {
-        if (identical(input$domain, "Hitting")) {
-          dplyr::filter(base, Batter %in% ALLOWED_HITTERS)
-        } else {
-          dplyr::filter(base, Pitcher %in% ALLOWED_PITCHERS)
-        }
-      } else {
-        base
-      }
+      # Filter by selected team code from CSV team columns.
+      selected_team <- input$teamType %||% "All"
+      if (identical(selected_team, "All")) return(base)
+      team_cols <- intersect(
+        c("PitcherTeam", "BatterTeam", "CatcherTeam", "HomeTeam", "AwayTeam"),
+        names(base)
+      )
+      if (!length(team_cols)) return(base[0, , drop = FALSE])
+      keep <- Reduce(`|`, lapply(team_cols, function(cn) as.character(base[[cn]]) == selected_team))
+      base[which(keep %in% TRUE), , drop = FALSE]
     })
     
     
@@ -14677,27 +14605,14 @@ mod_comp_server <- function(id, is_active = shiny::reactive(TRUE), global_date_r
       }
       if (!nrow(df)) return(df)
       
-      # Add team filtering
-      team_type <- input$teamType %||% "All"
-      if (team_type == "Campers") {
-        df <- switch(
-          dom,
-          "Pitcher" = dplyr::filter(df, Pitcher %in% ALLOWED_CAMPERS),
-          "Hitter"  = dplyr::filter(df, Batter %in% ALLOWED_CAMPERS),
-          "Catcher" = dplyr::filter(df, Catcher %in% ALLOWED_CAMPERS),
-          df
-        )
-      } else if (team_type == TEAM_CODE) {
-        # GCU team only
-        df <- switch(
-          dom,
-          "Pitcher" = dplyr::filter(df, Pitcher %in% ALLOWED_PITCHERS),
-          "Hitter"  = dplyr::filter(df, Batter %in% ALLOWED_HITTERS),
-          "Catcher" = dplyr::filter(df, Catcher %in% ALLOWED_PITCHERS),
-          df
-        )
-      }
-      # If team_type == "All", no team filtering is applied
+      # Team filtering by CSV team codes.
+      df <- switch(
+        dom,
+        "Pitcher" = filter_by_team_code(df, input$teamType %||% "All", domain = "Pitching"),
+        "Hitter" = filter_by_team_code(df, input$teamType %||% "All", domain = "Hitting"),
+        "Catcher" = filter_by_team_code(df, input$teamType %||% "All", domain = "Catching"),
+        df
+      )
       if (!nrow(df)) return(df)
       
       df <- apply_session_type_filter(df, stype)
@@ -23641,9 +23556,39 @@ ui <- tagList(
       "Heatmaps",
       value = "Heatmaps",
       fluidPage(
-        br(),
-        h4("Loading Heatmaps...", style = "font-weight:bold;"),
-        p("Redirecting to the HeatMaps view used in League Data.")
+        sidebarLayout(
+          sidebarPanel(
+            selectInput("hmChartType", "Select Chart:", choices = c("Heat","Pitch","QP+"), selected = "Heat"),
+            conditionalPanel(
+              "input.hmChartType=='Heat'",
+              selectInput(
+                "hmStat", "Select Stat:",
+                choices = c(
+                  "Frequency"      = "Frequency",
+                  "Whiff Rate"     = "Whiff Rate",
+                  "Exit Velocity"  = "EV",
+                  "GB Rate"        = "GB Rate",
+                  "Contact Rate"   = "Contact Rate",
+                  "Swing Rate"     = "Swing Rate",
+                  "Run Values"     = "Run Values"
+                ),
+                selected = "Frequency"
+              ),
+              uiOutput("hmNote")
+            ),
+            conditionalPanel(
+              "input.hmChartType=='QP+'",
+              helpText("Requires batter hand + counts from the same family (Ahead, Even, or Behind).")
+            ),
+            uiOutput("locLegend"),
+            width = 3
+          ),
+          mainPanel(
+            conditionalPanel("input.hmChartType=='Heat'",  plotOutput("heatmapsHeatPlot", height = "500px")),
+            conditionalPanel("input.hmChartType=='Pitch'", ggiraph::girafeOutput("heatmapsPitchPlot", height = "500px")),
+            conditionalPanel("input.hmChartType=='QP+'",   ggiraph::girafeOutput("heatmapsQPPlot",   height = "500px"))
+          )
+        )
       )
     )
   )
@@ -23713,10 +23658,8 @@ server <- function(input, output, session) {
   last_non_logout_tab <- reactiveVal("Leaderboard")
   observeEvent(input$top, {
     cur_tab <- input$top %||% "Leaderboard"
-    if (identical(cur_tab, "Heatmaps")) {
-      updateNavbarPage(session, "top", selected = "League Data")
-      try(updateTabsetPanel(session, "tabs", selected = "HeatMaps"), silent = TRUE)
-      return()
+    if (identical(cur_tab, "League Data")) {
+      try(updateTabsetPanel(session, "tabs", selected = "Data and Performance"), silent = TRUE)
     }
     last_non_logout_tab(cur_tab)
   }, ignoreInit = TRUE)
@@ -27853,7 +27796,7 @@ deg_to_clock <- function(x) {
   current_page <- reactive({
     s <- current_suite()
     if (identical(s, "League Data")) {
-      input$tabs %or% "Summary"                                   # pitching tabset id  # :contentReference[oaicite:6]{index=6}
+      input$tabs %or% "Data and Performance"
     } else if (identical(s, "Leaderboard")) {
       input[["leader-tabs"]] %or% "Pitching"
     } else if (identical(s, "Comparison Suite") || identical(s, "Comparison Tool")) {
@@ -28063,7 +28006,7 @@ deg_to_clock <- function(x) {
       } else if (identical(x$suite, "Comparison Suite") || identical(x$suite, "Comparison Tool")) {
         if (nzchar(x$page)) updateTabsetPanel(session, "comp-tabs", selected = x$page)
       } else if (identical(x$suite, "Heatmaps")) {
-        updateTabsetPanel(session, "tabs", selected = "HeatMaps")
+        updateNavbarPage(session, "top", selected = "Heatmaps")
       }
       later::later(function() noteJumping(FALSE), delay = 0.6)
     }, delay = 0.3)
@@ -28389,14 +28332,14 @@ deg_to_clock <- function(x) {
     
     df_base <- apply_session_type_filter(pitch_data_pitching, input$sessionType)
     
-    # Apply team filtering to get the available pitchers
-    if (input$teamType == "Campers") {
-      df_base <- dplyr::filter(df_base, Pitcher %in% ALLOWED_CAMPERS)
-    } else if (input$teamType == TEAM_CODE) {
-      # Filter to only GCU allowed pitchers (exclude campers)
-      df_base <- dplyr::filter(df_base, Pitcher %in% ALLOWED_PITCHERS)
+    # Team filter by CSV team codes (PitcherTeam/BatterTeam).
+    selected_team <- input$teamType %||% "All"
+    if (!identical(selected_team, "All")) {
+      df_base <- dplyr::filter(
+        df_base,
+        as.character(PitcherTeam) == selected_team | as.character(BatterTeam) == selected_team
+      )
     }
-    # If "All" is selected, df_base already contains all pitchers
     
     # Create name map for the filtered dataset
     raw_names_team <- sort(unique(df_base$Pitcher))
@@ -28450,13 +28393,14 @@ deg_to_clock <- function(x) {
     
     df_base <- apply_session_type_filter(pitch_data_pitching, input$sessionType)
     
-    # Apply team filtering
-    if (input$teamType == "Campers") {
-      df_base <- dplyr::filter(df_base, Pitcher %in% ALLOWED_CAMPERS)
-    } else if (input$teamType == TEAM_CODE) {
-      df_base <- dplyr::filter(df_base, Pitcher %in% ALLOWED_PITCHERS)
+    # Team filter by CSV team codes (PitcherTeam/BatterTeam).
+    selected_team <- input$teamType %||% "All"
+    if (!identical(selected_team, "All")) {
+      df_base <- dplyr::filter(
+        df_base,
+        as.character(PitcherTeam) == selected_team | as.character(BatterTeam) == selected_team
+      )
     }
-    # If "All" is selected, don't filter - show all data
     
     last_date <- if (is.null(input$pitcher) || input$pitcher == "All") {
       max(df_base$Date, na.rm = TRUE)
@@ -28789,13 +28733,13 @@ deg_to_clock <- function(x) {
     # Session type - use modified data instead of original
     df <- apply_session_type_filter(modified_pitch_data(), input$sessionType)
     
-    # ⛔️ Team filtering - Filter by team selection ⛔️
-    if (!is.null(input$teamType)) {
-      if (input$teamType == "Campers") {
-        # Filter to only allowed campers
-        df <- dplyr::filter(df, Pitcher %in% ALLOWED_CAMPERS)
-      }
-      # If "GCU" is selected, use the existing data (already filtered to ALLOWED_PITCHERS)
+    # Team filter by CSV team codes (PitcherTeam/BatterTeam).
+    selected_team <- input$teamType %||% "All"
+    if (!identical(selected_team, "All")) {
+      df <- dplyr::filter(
+        df,
+        as.character(PitcherTeam) == selected_team | as.character(BatterTeam) == selected_team
+      )
     }
     
     # ⛔️ Drop warmups & blank pitch types
@@ -35150,35 +35094,14 @@ deg_to_clock <- function(x) {
     team_type <- input$corr_teamType %||% "All"
     
     if (input$corr_domain == "Pitching") {
-      # Filter by team selection
-      if (team_type == "Campers") {
-        players <- sort(intersect(ALLOWED_CAMPERS, unique(pitch_data_pitching$Pitcher)))
-      } else if (team_type == TEAM_CODE) {
-        players <- sort(intersect(ALLOWED_PITCHERS, unique(pitch_data_pitching$Pitcher)))
-      } else {
-        # "All" - show all players
-        players <- sort(unique(pitch_data_pitching$Pitcher))
-      }
+      d <- filter_by_team_code(pitch_data_pitching, team_type, domain = "Pitching")
+      players <- sort(unique(na.omit(as.character(d$Pitcher))))
     } else if (input$corr_domain == "Hitting") {
-      # Filter by team selection
-      if (team_type == "Campers") {
-        players <- sort(intersect(ALLOWED_CAMPERS, unique(na.omit(as.character(pitch_data$Batter)))))
-      } else if (team_type == TEAM_CODE) {
-        players <- sort(intersect(ALLOWED_HITTERS, unique(na.omit(as.character(pitch_data$Batter)))))
-      } else {
-        # "All" - show all players
-        players <- sort(unique(na.omit(as.character(pitch_data$Batter))))
-      }
+      d <- filter_by_team_code(pitch_data, team_type, domain = "Hitting")
+      players <- sort(unique(na.omit(as.character(d$Batter))))
     } else if (input$corr_domain == "Catching") {
-      # Filter by team selection
-      if (team_type == "Campers") {
-        players <- sort(intersect(ALLOWED_CAMPERS, unique(na.omit(as.character(pitch_data$Catcher)))))
-      } else if (team_type == TEAM_CODE) {
-        players <- sort(intersect(ALLOWED_PITCHERS, unique(na.omit(as.character(pitch_data$Catcher)))))
-      } else {
-        # "All" - show all players
-        players <- sort(unique(na.omit(as.character(pitch_data$Catcher))))
-      }
+      d <- filter_by_team_code(pitch_data, team_type, domain = "Catching")
+      players <- sort(unique(na.omit(as.character(d$Catcher))))
     } else {
       players <- c()
     }
@@ -35356,19 +35279,15 @@ deg_to_clock <- function(x) {
       cat("Note: Could not apply user filtering:", e$message, "\n")
     })
     
-    # Apply team filtering based on Team selector
+    # Apply team filtering based on selected team code
     team_type <- input$corr_teamType %||% "All"
-    if (team_type == "Campers") {
-      data_before_team <- nrow(data)
-      data <- data %>% dplyr::filter(!!rlang::sym(player_col) %in% ALLOWED_CAMPERS)
-      cat("Campers filter applied: ", data_before_team, "->", nrow(data), "\n")
-    } else if (team_type == TEAM_CODE) {
-      # GCU team
-      data_before_team <- nrow(data)
-      data <- data %>% dplyr::filter(!!rlang::sym(player_col) %in% ALLOWED_PITCHERS)
-      cat("GCU filter applied: ", data_before_team, "->", nrow(data), "\n")
-    }
-    # If "All" is selected, don't filter - show all data
+    data_before_team <- nrow(data)
+    data <- filter_by_team_code(
+      data,
+      team_type,
+      domain = if (input$corr_domain == "Hitting") "Hitting" else if (input$corr_domain == "Catching") "Catching" else "Pitching"
+    )
+    cat("Team filter applied: ", data_before_team, "->", nrow(data), " (team=", team_type, ")\n", sep = "")
     
     # Apply filters
     if (!is.null(input$corr_date_range)) {

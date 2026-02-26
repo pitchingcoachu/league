@@ -13324,8 +13324,17 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
     
     # Build leaderboard table by player for the selected domain (Pitching path you already had)
     output$lbTable <- DT::renderDataTable({
+      perf_t0 <- perf_now()
+      perf_rows <- NA_integer_
+      on.exit(perf_log_runtime(
+        "leader.lbTable",
+        perf_t0,
+        perf_rows,
+        sprintf("mode=%s entity=%s", input$lbMode %||% "", input$entityView %||% "")
+      ), add = TRUE)
       df <- filtered_lb()
       validate(need(nrow(df) > 0, "No data for selected filters"))
+      perf_rows <- nrow(df)
       
       entity_col <- resolve_lb_entity_col(df, input$domain)
       if (!entity_col %in% names(df)) {
@@ -13537,6 +13546,7 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
         
         original_data <- if (identical(mode, "Usage")) filtered_lb_before_pitch_type() else NULL
         
+        needs_process_extras <- !identical(mode, "Stuff")
         rows <- lapply(names(by_player), function(player_name) {
           dfi <- by_player[[player_name]]
           # Flatten any list-cols that break downstream summaries
@@ -13557,10 +13567,18 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
             for (nm in num_cols) df_ex[[nm]] <- suppressWarnings(as.numeric(df_ex[[nm]]))
             df_ex
           }
-          extras_all <- compute_process_results(dfi) %>%
-            dplyr::filter(PitchType == "All") %>%
-            dplyr::select(IP, BABIP, `GB%`, `Barrel%`, AVG, SLG, xWOBA, xISO, FIP, WHIP, `RV/100`) %>%
-            coerce_extras_types()
+          extras_all <- if (isTRUE(needs_process_extras)) {
+            compute_process_results(dfi) %>%
+              dplyr::filter(PitchType == "All") %>%
+              dplyr::select(IP, BABIP, `GB%`, `Barrel%`, AVG, SLG, xWOBA, xISO, FIP, WHIP, `RV/100`) %>%
+              coerce_extras_types()
+          } else {
+            tibble::tibble(
+              IP = NA_character_, BABIP = NA_real_, `GB%` = NA_real_, `Barrel%` = NA_real_,
+              AVG = NA_real_, SLG = NA_real_, xWOBA = NA_real_, xISO = NA_real_,
+              FIP = NA_real_, WHIP = NA_real_, `RV/100` = NA_real_
+            )
+          }
           if (!nrow(extras_all)) {
             extras_all <- tibble::tibble(
               IP = NA_character_, BABIP = NA_real_, `GB%` = NA_real_, `Barrel%` = NA_real_,

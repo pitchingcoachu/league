@@ -20,6 +20,7 @@ library(shinymanager)  # for custom authentication with cool login page
 # --- media uploads (Cloudinary) ---
 # raise upload size if needed (50 MB here)
 options(shiny.maxRequestSize = 4 * 1024^3)
+options(DT.options = list(pageLength = 100, lengthMenu = c(25, 50, 100, 250, 500)))
 
 # Set default plotting background to transparent
 options(shiny.plot.res = 96)
@@ -2925,7 +2926,7 @@ datatable_with_colvis <- function(df, lock = character(0), remember = TRUE, defa
         fixedHeader   = TRUE,
         stateSave     = remember,
         stateDuration = -1,
-        pageLength    = 10,
+        pageLength    = 100,
         autoWidth     = FALSE,    # Changed from TRUE - lets DataTables calculate proper widths
         scrollX       = TRUE,      # Enable horizontal scrolling
         scrollCollapse = TRUE,     # Allow scroll container to collapse
@@ -5338,13 +5339,17 @@ if (!is.null(pitch_data_backend_result) &&
     !is.null(pitch_data_backend_result$data)) {
   pitch_data <- pitch_data_backend_result$data
   all_csvs <- unique(as.character(pitch_data_backend_result$source_files %||% character(0)))
-  all_csvs <- all_csvs[vapply(all_csvs, is_league_source_file, logical(1))]
-  if ("SourceFile" %in% names(pitch_data)) {
+  if (!isTRUE(pitch_data_backend_result$league_filtered)) {
+    all_csvs <- all_csvs[vapply(all_csvs, is_league_source_file, logical(1))]
+  }
+  if ("SourceFile" %in% names(pitch_data) && !isTRUE(pitch_data_backend_result$league_filtered)) {
     pitch_data <- pitch_data[vapply(pitch_data$SourceFile, is_league_source_file, logical(1)), , drop = FALSE]
   }
   pitch_data_loaded_from_backend <- TRUE
+  backend_label <- if (isTRUE(pitch_data_backend_result$loaded_from_cache)) "cache" else "backend"
   log_startup_timing(sprintf(
-    "Loaded pitch_data from backend (%d rows, %d source files)",
+    "Loaded pitch_data from %s (%d rows, %d source files)",
+    backend_label,
     nrow(pitch_data), length(all_csvs)
   ))
 }
@@ -7179,14 +7184,15 @@ pitch_ui <- function(show_header = FALSE) {
           selected = "All"
         ),
         uiOutput("pitcher_ui"),
-        selectInput(
+        selectizeInput(
           "oppHitter", "Select Hitter:",
-          choices = c("All" = "All", batter_map),
-          selected = "All"
+          choices = NULL,
+          selected = "All",
+          options = list(placeholder = "All hitters")
         ),
         dateRangeInput(
           "dates", "Date Range:",
-          start  = if(exists("pitch_data") && nrow(pitch_data) > 0) max(pitch_data$Date, na.rm = TRUE) else Sys.Date(),
+          start  = if(exists("pitch_data") && nrow(pitch_data) > 0) min(pitch_data$Date, na.rm = TRUE) else Sys.Date(),
           end    = if(exists("pitch_data") && nrow(pitch_data) > 0) max(pitch_data$Date, na.rm = TRUE) else Sys.Date(),
           format = "mm/dd/yyyy"
         ),
@@ -7763,7 +7769,7 @@ mod_hit_ui <- function(id, show_header = FALSE) {
           selected = "All"
         ),
         dateRangeInput(ns("dates"), "Date Range:",
-                       start = max(pitch_data$Date, na.rm = TRUE),
+                       start = min(pitch_data$Date, na.rm = TRUE),
                        end   = max(pitch_data$Date, na.rm = TRUE),
                        format = "mm/dd/yyyy"),
         selectInput(ns("hand"),       "Pitcher Hand:",  choices = c("All","Left","Right"), selected = "All"),
@@ -10616,7 +10622,7 @@ mod_catch_ui <- function(id, show_header = FALSE) {
           selected = "All"
         ),
         dateRangeInput(ns("dates"), "Date Range:",
-                       start = max(pitch_data$Date, na.rm = TRUE),
+                       start = min(pitch_data$Date, na.rm = TRUE),
                        end   = max(pitch_data$Date, na.rm = TRUE),
                        format = "mm/dd/yyyy"),
         selectInput(ns("hand"), "Pitcher Hand:", choices = c("All","Left","Right"), selected = "All"),
@@ -12950,7 +12956,7 @@ mod_leader_ui <- function(id, show_header = FALSE) {
         # --- Common filters (apply to all domains) ---
         selectInput(ns("sessionType"), "Session Type:", choices = session_type_choices(), selected = "All"),
         dateRangeInput(ns("dates"), "Date Range:",
-                       start = max(pitch_data$Date, na.rm = TRUE),
+                       start = min(pitch_data$Date, na.rm = TRUE),
                        end   = max(pitch_data$Date, na.rm = TRUE),
                        format = "mm/dd/yyyy"),
         selectInput(ns("hand"),       "Pitcher Hand:",  choices = c("All","Left","Right"), selected = "All"),
@@ -13276,6 +13282,11 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
         )
       )
     })
+
+    lb_table_cache_version <- reactiveVal(0L)
+    observeEvent(list(filtered_lb(), filtered_lb_before_pitch_type()), {
+      lb_table_cache_version(isolate(lb_table_cache_version()) + 1L)
+    }, ignoreInit = FALSE)
     
     # Build leaderboard table by player for the selected domain (Pitching path you already had)
     output$lbTable <- DT::renderDataTable({
@@ -13622,7 +13633,16 @@ mod_leader_server <- function(id, is_active = shiny::reactive(TRUE), global_date
           pin_all_row     = TRUE
         )
       } # End of else block for normal modes
-    }, server = FALSE)
+    }, server = FALSE) %>%
+      bindCache(
+        lb_table_cache_version(),
+        input$domain,
+        input$teamType,
+        input$lbMode,
+        input$lbCustomCols,
+        input$lbColors,
+        cache = "app"
+      )
     
     # ==========================
     # Leaderboard: Hitting (PLAYER)
@@ -14152,7 +14172,7 @@ mod_comp_ui <- function(id, show_header = FALSE) {
               ),
               dateRangeInput(
                 ns("cmpA_dates"), "Date Range:",
-                start = max(pitch_data$Date, na.rm = TRUE),
+                start = min(pitch_data$Date, na.rm = TRUE),
                 end   = max(pitch_data$Date, na.rm = TRUE),
                 format = "mm/dd/yyyy"
               ),
@@ -14255,7 +14275,7 @@ mod_comp_ui <- function(id, show_header = FALSE) {
               ),
               dateRangeInput(
                 ns("cmpB_dates"), "Date Range:",
-                start = max(pitch_data$Date, na.rm = TRUE),
+                start = min(pitch_data$Date, na.rm = TRUE),
                 end   = max(pitch_data$Date, na.rm = TRUE),
                 format = "mm/dd/yyyy"
               ),
@@ -16671,7 +16691,7 @@ correlations_ui <- function() {
              # Date range
              div(class = "correlation-controls",
                  dateRangeInput("corr_date_range", "Date Range:",
-                                start = max(pitch_data$Date, na.rm = TRUE),
+                                start = min(pitch_data$Date, na.rm = TRUE),
                                 end = max(pitch_data$Date, na.rm = TRUE),
                                 format = "yyyy-mm-dd")
              ),
@@ -16808,7 +16828,7 @@ custom_reports_ui <- function(id) {
                        if (!is.finite(d_max)) d_max <- Sys.Date()
                        dateRangeInput(
                          ns("global_dates"), "Global Date Range:",
-                         start = d_max, end = d_max, min = d_min, max = d_max,
+                         start = d_min, end = d_max, min = d_min, max = d_max,
                          format = "mm/dd/yyyy"
                        )
                      }
@@ -21318,7 +21338,7 @@ biomech_server <- function(input, output, session, app_id_fn) {
     dt <- DT::datatable(
       data,
       options = list(
-        pageLength = 25,
+        pageLength = 100,
         scrollX = TRUE,
         order = list(list(0, 'desc')),
         search = list(search = '', smart = TRUE, regex = FALSE, caseInsensitive = TRUE)
@@ -21367,7 +21387,7 @@ biomech_server <- function(input, output, session, app_id_fn) {
     dt <- DT::datatable(
       avg_data,
       options = list(
-        pageLength = 25,
+        pageLength = 100,
         scrollX = TRUE,
         dom = 't'
       ),
@@ -21414,7 +21434,7 @@ biomech_server <- function(input, output, session, app_id_fn) {
     dt <- DT::datatable(
       norm_data,
       options = list(
-        pageLength = 25,
+        pageLength = 100,
         scrollX = TRUE,
         dom = 't'
       ),
@@ -24326,7 +24346,7 @@ deg_to_clock <- function(x) {
       )
     DT::datatable(
       display,
-      options = list(dom = "tp", pageLength = 5, order = list(list(4, "desc"))),
+      options = list(dom = "tp", pageLength = 100, order = list(list(4, "desc"))),
       rownames = FALSE,
       escape = FALSE
     )
@@ -28004,7 +28024,7 @@ deg_to_clock <- function(x) {
       # Escape Author, Date, Note; leave Filter & Attachment unescaped so links work
       escape   = c(1, 2, 4),
       rownames = FALSE,
-      options  = list(pageLength = 25, order = list(list(1, "desc")))
+      options  = list(pageLength = 100, order = list(list(1, "desc")))
     )
   }
   
@@ -28027,7 +28047,7 @@ deg_to_clock <- function(x) {
       out,
       escape   = FALSE,             # needed so the "Open attachment" link renders
       rownames = FALSE,
-      options  = list(dom = 'Bfrtip', pageLength = 10)
+      options  = list(dom = 'Bfrtip', pageLength = 100)
     )
   })
   
@@ -28067,15 +28087,15 @@ deg_to_clock <- function(x) {
   observeEvent(TRUE, {
     req(input$sessionType, input$pitcher)
     df_base <- apply_session_type_filter(pitch_data_pitching, input$sessionType)
-    
-    last_date <- if (input$pitcher == "All") {
-      max(df_base$Date, na.rm = TRUE)
-    } else {
-      mx <- max(df_base$Date[df_base$Pitcher == input$pitcher], na.rm = TRUE)
-      if (is.finite(mx)) mx else max(df_base$Date, na.rm = TRUE)
+
+    if (!identical(input$pitcher, "All")) {
+      df_base <- dplyr::filter(df_base, Pitcher == input$pitcher)
+      if (!nrow(df_base)) df_base <- apply_session_type_filter(pitch_data_pitching, input$sessionType)
     }
-    if (is.finite(last_date)) {
-      updateDateRangeInput(session, "dates", start = last_date, end = last_date)
+    d_min <- suppressWarnings(min(df_base$Date, na.rm = TRUE))
+    d_max <- suppressWarnings(max(df_base$Date, na.rm = TRUE))
+    if (is.finite(d_min) && is.finite(d_max)) {
+      updateDateRangeInput(session, "dates", start = d_min, end = d_max)
     }
   }, once = TRUE)
   
@@ -28097,16 +28117,16 @@ deg_to_clock <- function(x) {
                              end = global_dates[2])
       }
     } else {
-      # Only fall back to last date if no global date range is set
-      last_date <- if (input$pitcher == "All") {
-        max(pitch_data_pitching$Date, na.rm = TRUE)
-      } else {
-        max(pitch_data_pitching$Date[pitch_data_pitching$Pitcher == input$pitcher], na.rm = TRUE)
+      df_base <- pitch_data_pitching
+      if (!identical(input$pitcher, "All")) {
+        df_base <- dplyr::filter(df_base, Pitcher == input$pitcher)
+        if (!nrow(df_base)) df_base <- pitch_data_pitching
       }
-      if (is.finite(last_date)) {
-        updateDateRangeInput(session, "dates", start = last_date, end = last_date)
-        # Update global date range with this new value
-        global_date_range(c(last_date, last_date))
+      d_min <- suppressWarnings(min(df_base$Date, na.rm = TRUE))
+      d_max <- suppressWarnings(max(df_base$Date, na.rm = TRUE))
+      if (is.finite(d_min) && is.finite(d_max)) {
+        updateDateRangeInput(session, "dates", start = d_min, end = d_max)
+        global_date_range(c(d_min, d_max))
       }
     }
   }, ignoreInit = TRUE)
@@ -28453,14 +28473,60 @@ deg_to_clock <- function(x) {
       )
     }
     
-    last_date <- if (is.null(input$pitcher) || input$pitcher == "All") {
-      max(df_base$Date, na.rm = TRUE)
-    } else {
-      ld <- max(df_base$Date[df_base$Pitcher == input$pitcher], na.rm = TRUE)
-      if (is.finite(ld)) ld else max(df_base$Date, na.rm = TRUE)
+    if (!is.null(input$pitcher) && !identical(input$pitcher, "All") && !identical(input$pitcher, "No data")) {
+      df_pitcher <- dplyr::filter(df_base, Pitcher == input$pitcher)
+      if (nrow(df_pitcher)) df_base <- df_pitcher
     }
-    updateDateRangeInput(session, "dates", start = last_date, end = last_date)
+    d_min <- suppressWarnings(min(df_base$Date, na.rm = TRUE))
+    d_max <- suppressWarnings(max(df_base$Date, na.rm = TRUE))
+    if (is.finite(d_min) && is.finite(d_max)) {
+      updateDateRangeInput(session, "dates", start = d_min, end = d_max)
+    }
   }, ignoreInit = TRUE)
+
+  observeEvent(list(input$sessionType, input$teamType, input$pitcher, input$dates), {
+    req(input$sessionType, input$teamType)
+
+    df_base <- apply_session_type_filter(pitch_data_pitching, input$sessionType)
+
+    selected_team <- input$teamType %||% "All"
+    if (!identical(selected_team, "All")) {
+      df_base <- dplyr::filter(
+        df_base,
+        as.character(PitcherTeam) == selected_team | as.character(BatterTeam) == selected_team
+      )
+    }
+
+    if (!is.null(input$dates) && length(input$dates) == 2) {
+      d0 <- suppressWarnings(as.Date(input$dates[1]))
+      d1 <- suppressWarnings(as.Date(input$dates[2]))
+      if (is.finite(d0) && is.finite(d1)) {
+        df_base <- dplyr::filter(df_base, !is.na(Date), Date >= d0, Date <= d1)
+      }
+    }
+
+    pitcher_pick <- input$pitcher %||% "All"
+    if (!identical(pitcher_pick, "All") && !identical(pitcher_pick, "No data")) {
+      df_base <- dplyr::filter(df_base, Pitcher == pitcher_pick)
+    }
+
+    raw_hitters <- sort(unique(stats::na.omit(as.character(df_base$Batter))))
+    raw_hitters <- raw_hitters[nzchar(trimws(raw_hitters))]
+    hitter_choices <- c("All" = "All", setNames(raw_hitters, format_name_first_last(raw_hitters)))
+
+    selected_hitter <- isolate(input$oppHitter)
+    valid_values <- unname(hitter_choices)
+    if (is.null(selected_hitter) || !(selected_hitter %in% valid_values)) {
+      selected_hitter <- "All"
+    }
+
+    updateSelectizeInput(
+      session, "oppHitter",
+      choices = hitter_choices,
+      selected = selected_hitter,
+      server = TRUE
+    )
+  }, ignoreInit = FALSE)
 
   # ---- Manual Velocity Entry (Pitching Suite) ----
   manual_velocity_entries <- reactiveVal(load_manual_velocity_entries(current_school()))
@@ -28617,7 +28683,7 @@ deg_to_clock <- function(x) {
       df,
       rownames = FALSE,
       selection = "single",
-      options = list(pageLength = 12, order = list(list(0, "desc")), columnDefs = list(list(targets = 7, visible = FALSE)))
+      options = list(pageLength = 100, order = list(list(0, "desc")), columnDefs = list(list(targets = 7, visible = FALSE)))
     )
   })
 
@@ -28767,7 +28833,7 @@ deg_to_clock <- function(x) {
       ) %>%
       dplyr::arrange(dplyr::desc(`Peak Velo`))
     names(out) <- c("Throw Type", "Plyo Drill", "Ball (oz)", "Entries", "Avg Velo", "Peak Velo", "Min Velo")
-    DT::datatable(out, rownames = FALSE, options = list(pageLength = 12, order = list(list(5, "desc"))))
+    DT::datatable(out, rownames = FALSE, options = list(pageLength = 100, order = list(list(5, "desc"))))
   })
   
   # 2) Filtered data
@@ -29786,6 +29852,25 @@ deg_to_clock <- function(x) {
         }, character(1))
       ))
   }
+
+  # Cache key that invalidates whenever the core filtered pitching dataset changes.
+  pitch_table_cache_version <- reactiveVal(0L)
+  pitch_table_compute_cache <- reactiveVal(new.env(parent = emptyenv()))
+  observeEvent(filtered_data(), {
+    pitch_table_cache_version(isolate(pitch_table_cache_version()) + 1L)
+    pitch_table_compute_cache(new.env(parent = emptyenv()))
+  }, ignoreInit = FALSE)
+
+  cached_pitch_table_compute <- function(tag, ..., compute) {
+    env <- pitch_table_compute_cache()
+    key <- paste0(tag, "::", digest::digest(list(...), algo = "xxhash64"))
+    if (exists(key, envir = env, inherits = FALSE)) {
+      return(get(key, envir = env, inherits = FALSE))
+    }
+    val <- compute()
+    assign(key, val, envir = env)
+    val
+  }
   
   # =========================
   # Summary page table (uses summary* controls ONLY)
@@ -29806,7 +29891,11 @@ deg_to_clock <- function(x) {
       
       # Apply Split By transformation
       split_choice <- if (!is.null(input$summarySplitBy)) input$summarySplitBy else "Pitch Types"
-      df <- apply_split_by(df, split_choice)
+      df <- cached_pitch_table_compute(
+        "summary_page_split_df",
+        pitch_table_cache_version(), split_choice,
+        compute = function() apply_split_by(df, split_choice)
+      )
       
       # Determine the column name based on split choice
       split_col_name <- switch(
@@ -29971,7 +30060,11 @@ deg_to_clock <- function(x) {
         
         # Extras (xWOBA/xISO/BABIP/Barrel%) — numeric
         # Note: This function may need SplitColumn support internally
-        extras_raw <- safe_compute_process_results(df, mode)
+        extras_raw <- cached_pitch_table_compute(
+          "summary_page_safe_extras",
+          pitch_table_cache_version(), split_choice, mode,
+          compute = function() safe_compute_process_results(df, mode)
+        )
         if ("PitchType" %in% names(extras_raw)) {
           extras <- extras_raw %>%
             dplyr::rename(SplitColumn = PitchType) %>%
@@ -30187,7 +30280,11 @@ deg_to_clock <- function(x) {
         all_row$OPS <- all_row$SLG + all_row$OBP
         
         # Fill extras (All)
-        extras_all <- compute_process_results(df, mode) %>%
+        extras_all <- cached_pitch_table_compute(
+          "summary_page_extras_all",
+          pitch_table_cache_version(), split_choice, mode,
+          compute = function() compute_process_results(df, mode)
+        ) %>%
           dplyr::mutate(
             xWOBA     = parse_num(xWOBA),
             xISO      = parse_num(xISO),
@@ -30795,7 +30892,11 @@ deg_to_clock <- function(x) {
         )
       
       # Base per-split-type summary
-      summ <- safe_make_summary(df, group_col = "SplitColumn")
+      summ <- cached_pitch_table_compute(
+        "summary_page_safe_make_summary",
+        pitch_table_cache_version(), split_choice,
+        compute = function() safe_make_summary(df, group_col = "SplitColumn")
+      )
       summ <- dplyr::mutate(summ,
                             ReleaseTilt = as.character(ReleaseTilt),
                             BreakTilt   = as.character(BreakTilt)
@@ -31087,7 +31188,11 @@ deg_to_clock <- function(x) {
         )
       
       # Add Process/Results columns and SANITIZE for DT
-      extras <- compute_process_results(df, mode)
+      extras <- cached_pitch_table_compute(
+        "summary_page_extras",
+        pitch_table_cache_version(), split_choice, mode,
+        compute = function() compute_process_results(df, mode)
+      )
       if ("PitchType" %in% names(extras)) {
         extras <- extras %>%
           dplyr::rename(!!split_col_name := PitchType) %>%
@@ -31097,7 +31202,11 @@ deg_to_clock <- function(x) {
       df_table <- fill_all_qp_pct(df_table, df)
       
       if (identical(mode, "Usage")) {
-        usage_extras <- compute_usage_by_count(df)
+        usage_extras <- cached_pitch_table_compute(
+          "summary_page_usage_extras",
+          pitch_table_cache_version(), split_choice,
+          compute = function() compute_usage_by_count(df)
+        )
         if ("PitchType" %in% names(usage_extras)) {
           usage_extras <- usage_extras %>%
             dplyr::rename(!!split_col_name := PitchType) %>%
@@ -31186,7 +31295,15 @@ deg_to_clock <- function(x) {
         options = list(dom = 't'), rownames = FALSE
       )
     })
-  })
+  }) %>%
+    bindCache(
+      pitch_table_cache_version(),
+      input$summarySplitBy,
+      input$summaryTableMode,
+      input$summaryCustomCols,
+      input$summaryTableColors,
+      cache = "app"
+    )
   
   # ----- Custom table save/load (Summary & DP) -----
   observeEvent(input$summaryCustomSaved, {
@@ -31276,7 +31393,11 @@ deg_to_clock <- function(x) {
     
     # Apply Split By transformation
     split_choice <- if (!is.null(input$dpSplitBy)) input$dpSplitBy else "Pitch Types"
-    df <- apply_split_by(df, split_choice)
+    df <- cached_pitch_table_compute(
+      "dp_split_df",
+      pitch_table_cache_version(), split_choice,
+      compute = function() apply_split_by(df, split_choice)
+    )
     
     # Determine the column name based on split choice
     split_col_name <- switch(
@@ -31420,7 +31541,11 @@ deg_to_clock <- function(x) {
         )
       
       # Extras (xWOBA/xISO/BABIP/Barrel%) — numeric
-      extras_raw <- compute_process_results(df)
+      extras_raw <- cached_pitch_table_compute(
+        "dp_extras_raw_results",
+        pitch_table_cache_version(), split_choice,
+        compute = function() compute_process_results(df)
+      )
       if ("PitchType" %in% names(extras_raw)) {
         extras <- extras_raw %>%
           dplyr::rename(SplitColumn = PitchType) %>%
@@ -31622,7 +31747,11 @@ deg_to_clock <- function(x) {
       all_row$OPS <- all_row$SLG + all_row$OBP
       
       # Fill extras (All)
-      extras_all <- compute_process_results(df, mode) %>%
+      extras_all <- cached_pitch_table_compute(
+        "dp_extras_all",
+        pitch_table_cache_version(), split_choice, mode,
+        compute = function() compute_process_results(df, mode)
+      ) %>%
         dplyr::mutate(
           xWOBA     = parse_num(xWOBA),
           xISO      = parse_num(xISO),
@@ -32262,7 +32391,11 @@ deg_to_clock <- function(x) {
       )
     
     # Base per-pitch-type summary
-    summ <- safe_make_summary(df, group_col = "SplitColumn")
+    summ <- cached_pitch_table_compute(
+      "dp_safe_make_summary",
+      pitch_table_cache_version(), split_choice,
+      compute = function() safe_make_summary(df, group_col = "SplitColumn")
+    )
     summ <- dplyr::mutate(summ,
                           ReleaseTilt = as.character(ReleaseTilt),
                           BreakTilt   = as.character(BreakTilt)
@@ -32394,7 +32527,11 @@ deg_to_clock <- function(x) {
       )
     
     # Add Process/Results extras and sanitize for DT
-    extras_raw <- compute_process_results(df)
+    extras_raw <- cached_pitch_table_compute(
+      "dp_extras_raw",
+      pitch_table_cache_version(), split_choice, mode,
+      compute = function() compute_process_results(df)
+    )
     if ("PitchType" %in% names(extras_raw)) {
       extras <- extras_raw %>% 
         dplyr::rename(!!split_col_name := PitchType) %>%
@@ -32406,7 +32543,11 @@ deg_to_clock <- function(x) {
     df_table <- df_table %>% dplyr::left_join(extras, by = split_col_name)
     df_table <- fill_all_qp_pct(df_table, df)
     if (identical(mode, "Usage")) {
-      usage_extras_raw <- compute_usage_by_count(df)
+      usage_extras_raw <- cached_pitch_table_compute(
+        "dp_usage_extras",
+        pitch_table_cache_version(), split_choice,
+        compute = function() compute_usage_by_count(df)
+      )
       if ("PitchType" %in% names(usage_extras_raw)) {
         usage_extras <- usage_extras_raw %>%
           dplyr::rename(!!split_col_name := PitchType) %>%
@@ -32472,7 +32613,15 @@ deg_to_clock <- function(x) {
       mode            = mode,
       enable_colors   = isTRUE(input$dpTableColors)
     )
-  })
+  }) %>%
+    bindCache(
+      pitch_table_cache_version(),
+      input$dpSplitBy,
+      input$dpTableMode,
+      input$dpCustomCols,
+      input$dpTableColors,
+      cache = "app"
+    )
   
   # Click-to-video support on Summary/DP tables (# column)
   observeEvent(input$summaryTablePage_cell_clicked, {
@@ -36048,7 +36197,7 @@ deg_to_clock <- function(x) {
     DT::datatable(
       data[cols_to_show],
       options = list(
-        pageLength = 15,
+        pageLength = 100,
         scrollX = TRUE,
         dom = 'Bfrtip',
         buttons = c('copy', 'csv', 'excel')
@@ -37909,7 +38058,7 @@ deg_to_clock <- function(x) {
     dt <- DT::datatable(
       table_data,
       options = list(
-        pageLength = 5,
+        pageLength = 100,
         searching = FALSE,
         info = FALSE,
         lengthChange = FALSE,
@@ -37950,7 +38099,7 @@ deg_to_clock <- function(x) {
     dt <- DT::datatable(
       table_data,
       options = list(
-        pageLength = 5,
+        pageLength = 100,
         searching = FALSE,
         info = FALSE,
         lengthChange = FALSE,
@@ -37991,7 +38140,7 @@ deg_to_clock <- function(x) {
     dt <- DT::datatable(
       table_data,
       options = list(
-        pageLength = 5,
+        pageLength = 100,
         searching = FALSE,
         info = FALSE,
         lengthChange = FALSE,

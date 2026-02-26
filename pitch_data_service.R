@@ -287,9 +287,13 @@ pitch_data_cache_file <- function(school_code = "") {
 }
 
 pitch_data_cache_ttl <- function() {
-  ttl <- suppressWarnings(as.numeric(Sys.getenv("PITCH_DATA_CACHE_TTL_SEC", "900")))
-  if (is.na(ttl) || ttl < 0) ttl <- 900
+  ttl <- suppressWarnings(as.numeric(Sys.getenv("PITCH_DATA_CACHE_TTL_SEC", "21600")))
+  if (is.na(ttl) || ttl < 0) ttl <- 21600
   ttl
+}
+
+pitch_data_backend_league_filter_enabled <- function() {
+  pitch_data_parse_bool(Sys.getenv("PITCH_DATA_DB_LEAGUE_FILTER", "1"), default = TRUE)
 }
 
 pitch_data_logger <- function(logger, label) {
@@ -391,6 +395,7 @@ pitch_data_build_select_sql <- function(con, cols_present, school_code, start_da
   school_col <- resolve_col("school_code")
   session_date_col <- resolve_col("session_date")
   id_col <- resolve_col("id")
+  source_file_col <- resolve_col("source_file")
   has_school <- !is.null(school_col)
   has_session_date <- !is.null(session_date_col)
   has_id <- !is.null(id_col)
@@ -439,6 +444,18 @@ pitch_data_build_select_sql <- function(con, cols_present, school_code, start_da
     where <- c(where, sprintf("%s < %s",
                               as.character(DBI::dbQuoteIdentifier(con, session_date_col)),
                               as.character(DBI::dbQuoteLiteral(con, as.character(end_date)))))
+  }
+
+  if (!is.null(source_file_col) && isTRUE(pitch_data_backend_league_filter_enabled())) {
+    sfq <- as.character(DBI::dbQuoteIdentifier(con, source_file_col))
+    sf_norm <- sprintf("replace(lower(coalesce(%s, '')), '\\\\', '/')", sfq)
+    where <- c(
+      where,
+      sprintf("%s LIKE '%%/v3/%%'", sf_norm),
+      sprintf("%s NOT LIKE '%%unverified%%'", sf_norm),
+      sprintf("%s NOT LIKE '%%playerpositioning%%'", sf_norm),
+      sprintf("%s NOT LIKE '%%battracking%%'", sf_norm)
+    )
   }
 
   if (!is.null(key_state) && has_id) {
@@ -592,6 +609,9 @@ load_pitch_data_from_postgres <- function(school_code = "", startup_logger = NUL
   ttl <- pitch_data_cache_ttl()
   cached <- pitch_data_load_cached(cache_file, ttl)
   if (!is.null(cached) && is.list(cached) && !is.null(cached$data)) {
+    cached$loaded_from_cache <- TRUE
+    cached$backend <- pitch_data_or(cached$backend, "postgres")
+    cached$league_filtered <- pitch_data_or(cached$league_filtered, FALSE)
     pitch_data_logger(startup_logger, sprintf("Loaded pitch_data from cache (%d rows)", nrow(cached$data)))
     return(cached)
   }
@@ -633,7 +653,9 @@ load_pitch_data_from_postgres <- function(school_code = "", startup_logger = NUL
   out <- list(
     data = df,
     source_files = source_files,
-    backend = "postgres"
+    backend = "postgres",
+    loaded_from_cache = FALSE,
+    league_filtered = isTRUE(pitch_data_backend_league_filter_enabled())
   )
 
   pitch_data_save_cache(cache_file, out)
